@@ -1,3 +1,5 @@
 selenium==4.25.0
-webdriver_manager==4.0.2
-python-telegram-bot==20.7
+webdriver-manager==4.0.2
+python-telegram-bot==21.5
+requests==2.32.3
+fake-useragent==1.5.1
