@@ -68,10 +68,3 @@ workflows:
   workflow_usados:
     jobs:
       - executar_scraper_usados
-    triggers:
-      - schedule:
-          cron: "0 8 * * *"  # Roda diariamente às 08:00 UTC (05:00 BRT)
-          filters:
-            branches:
-              only:
-                - main
