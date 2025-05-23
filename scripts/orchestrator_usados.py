@@ -42,8 +42,17 @@ logger = logging.getLogger("SCRAPER_USADOS_GERAL")
 
 # --- Configurações do Scraper ---
 SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
-SELETOR_INDICADOR_USADO_XPATH = ".//div[contains(@class, 's-price-instructions-style')]//a//span[contains(translate(., 'USADO', 'usado'), 'usado')]"
-SELETOR_RESULTADOS_CONT = "div.s-main-slot.s-result-list.s-search-results.sg-row" # Atualizado para maior precisão
+# XPath ATUALIZADO para melhor identificar itens com ofertas de usado
+SELETOR_INDICADOR_USADO_XPATH = (
+    ".//span[contains(translate(., 'OFERTA DE PRODUTO USADO', 'oferta de produto usado'), 'oferta de produto usado') or "
+    "contains(translate(., 'OFERTAS DE PRODUTOS USADOS', 'ofertas de produtos usados'), 'ofertas de produtos usados') or "
+    "contains(translate(., 'USADO COMO NOVO', 'usado como novo'), 'usado como novo') or "
+    "(ancestor::div[@data-cy='secondary-offer-recipe'] and (contains(translate(., 'USADO', 'usado'), 'usado') or contains(translate(., 'USADA', 'usada'), 'usada')) ) or " # Para "X oferta de produto usado"
+    "(.//div[contains(@class, 's-price-instructions-style')]//a//span[contains(translate(., 'USADO', 'usado'), 'usado')])" # Mantém a lógica original como fallback
+    "]"
+)
+logger.info(f"Usando SELETOR_INDICADOR_USADO_XPATH: {SELETOR_INDICADOR_USADO_XPATH}")
+SELETOR_RESULTADOS_CONT = "div.s-main-slot.s-result-list.s-search-results.sg-row"
 
 URL_GERAL_USADOS_BASE = (
     "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011"
@@ -71,7 +80,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_LINK_GLOBAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "500")) # Será sobrescrito pelo log para 1 ou 2
+MAX_PAGINAS_POR_LINK_GLOBAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "500"))
 logger.info(f"Máximo de páginas para busca geral de usados: {MAX_PAGINAS_POR_LINK_GLOBAL}")
 
 HISTORY_DIR_BASE = "history_files_usados"
@@ -100,11 +109,10 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
     pagina_atual = 1
     max_tentativas_pagina = 3
     consecutive_empty_pages = 0
-    max_consecutive_empty_pages = 3 # Se 3 páginas seguidas não tiverem itens, para.
+    max_consecutive_empty_pages = 3
 
     if max_paginas != MAX_PAGINAS_POR_LINK_GLOBAL:
         logger.info(f"O parâmetro 'max_paginas' ({max_paginas}) é diferente de MAX_PAGINAS_POR_LINK_GLOBAL ({MAX_PAGINAS_POR_LINK_GLOBAL}). Usando {max_paginas}.")
-
 
     while pagina_atual <= max_paginas:
         url_pagina = get_url_for_page_worker(base_url, pagina_atual, logger)
@@ -149,8 +157,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     )
                     logger.info(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' encontrado na página {pagina_atual}.")
                 except TimeoutException:
-                    logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' não encontrado na página {pagina_atual} após timeout. Pode ser página vazia ou com estrutura inesperada.")
-
+                    logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' não encontrado na página {pagina_atual} após timeout.")
+                    
                 items_selenium = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
                 logger.info(f"Página {pagina_atual}: Encontrados {len(items_selenium)} elementos com seletor Selenium '{SELETOR_ITEM_PRODUTO_USADO}'.")
 
@@ -185,108 +193,102 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     nome, link, asin, price = None, None, None, None
 
                     try:
+                        # Etapa 1: Verificar se o item é "usado" usando o XPath no elemento Selenium
                         try:
+                            # Usar o SELETOR_INDICADOR_USADO_XPATH atualizado aqui
                             indicador_usado_el = item_element_selenium.find_element(By.XPATH, SELETOR_INDICADOR_USADO_XPATH)
-                            item_logger.debug(f"Indicador direto de 'usado' encontrado via XPath: '{indicador_usado_el.text.strip()}'")
+                            item_logger.debug(f"Indicador de 'usado' encontrado via XPath: '{indicador_usado_el.text.strip() if indicador_usado_el.text else 'Indicador presente (sem texto direto no elemento XPath)'}'")
                         except NoSuchElementException:
-                            item_logger.debug(f"Item NÃO é uma listagem direta de 'usado' (XPath '{SELETOR_INDICADOR_USADO_XPATH}' não encontrado). Ignorando este item.")
+                            # Se o data-asin estiver disponível, logue-o para facilitar a depuração
+                            data_asin_sel = item_element_selenium.get_attribute('data-asin')
+                            item_logger.debug(f"Item (ASIN Sel: {data_asin_sel if data_asin_sel else 'N/A'}) NÃO é uma listagem direta de 'usado' ou não tem oferta de usado clara (XPath '{SELETOR_INDICADOR_USADO_XPATH}' não encontrado). Ignorando este item.")
                             continue
 
                         item_html = item_element_selenium.get_attribute('outerHTML')
                         item_soup = BeautifulSoup(item_html, 'html.parser')
 
-                        # --- INÍCIO DA ADAPTAÇÃO DO CÓDIGO FORNECIDO ---
+                        # --- INÍCIO DA INTEGRAÇÃO DOS SNIPPETS FORNECIDOS PELO USUÁRIO ---
                         
-                        # Extração do Nome
+                        # Snippet de Extração do Nome
                         title_div = item_soup.find('div', {'data-cy': 'title-recipe'})
                         if title_div:
                             h2 = title_div.find('h2')
-                            span_nome = h2.find('span') if h2 else None
-                            nome = span_nome.get_text(strip=True) if span_nome else None
+                            span_nome_tag = h2.find('span') if h2 else None # Renomeado para evitar conflito
+                            nome = span_nome_tag.get_text(strip=True) if span_nome_tag else None
                         else:
-                            # Fallback para a lógica original se 'data-cy':'title-recipe' não for encontrado
-                            nome_tag_original = item_soup.find('span', class_=['a-size-base-plus', 'a-color-base', 'a-text-normal'])
-                            if not nome_tag_original:
-                                nome_tag_original = item_soup.find('h2', class_='a-size-base-plus')
-                            if nome_tag_original:
-                                nome = nome_tag_original.get_text(strip=True)
-                            else:
-                                nome = None
-                        
-                        if not nome: # Nome vazio
-                            item_logger.debug("Nome do produto vazio (BS). Ignorando.")
+                            nome = None # Conforme snippet original do usuário
+
+                        if not nome:
+                            item_logger.debug("Nome do produto vazio (BS). Ignorando.") # Log do snippet do usuário
                             continue
-                        item_logger.debug(f"Nome (BS): '{nome}'")
+                        item_logger.debug(f"Nome (BS): '{nome}'") # Log adaptado
 
-                        # Extração do Link e ASIN
-                        link_tag = item_soup.find('a', href=re.compile(r'/dp/')) # Prioriza qualquer 'a' com /dp/
-                        if not link_tag: # Fallback para o seletor original mais específico se o genérico falhar
-                            link_tag = item_soup.find('a', class_='a-link-normal s-no-outline', href=re.compile(r'/dp/'))
-
+                        # Snippet de Extração do Link e ASIN
+                        link_tag = item_soup.find('a', href=re.compile(r'/dp/')) # Snippet do usuário
                         if link_tag and link_tag.has_attr('href'):
                             href_val = link_tag['href']
                             link = f"https://www.amazon.com.br{href_val}" if href_val.startswith("/") else href_val
-                            item_logger.debug(f"Link (BS): '{link}'")
+                            item_logger.debug(f"Link (BS): '{link}'") # Log adaptado
                         else:
-                            item_logger.warning("Link principal do produto não encontrado. Ignorando item.")
+                            item_logger.warning("Link principal do produto não encontrado. Ignorando item.") # Log do snippet do usuário
                             continue
 
-                        asin_match = re.search(r'/dp/([A-Z0-9]{10})', link)
+                        asin_match = re.search(r'/dp/([A-Z0-9]{10})', link) # Snippet do usuário
                         if asin_match:
                             asin = asin_match.group(1)
-                            item_logger.debug(f"ASIN (BS): '{asin}'")
+                            item_logger.debug(f"ASIN (BS): '{asin}'") # Log adaptado
                         else:
-                            item_logger.warning(f"ASIN não encontrado no link '{link}'. Ignorando item.")
-                            continue
+                            # Tenta pegar do atributo data-asin do item principal como fallback
+                            data_asin_value = item_element_selenium.get_attribute('data-asin')
+                            if data_asin_value and len(data_asin_value) == 10:
+                                asin = data_asin_value
+                                item_logger.debug(f"ASIN (BS, fallback de data-asin): '{asin}'")
+                            else:
+                                item_logger.warning(f"ASIN não encontrado no link '{link}' nem via data-asin. Ignorando item.") # Log do snippet do usuário, adaptado
+                                continue
                         
-                        # Extração do Preço
+                        # Snippet de Extração do Preço
                         price_text_bs = None
-                        # Tenta a lógica original primeiro (mais específica para ofertas de usados)
-                        price_instructions_div_bs = item_soup.find('div', class_='s-price-instructions-style')
-                        if price_instructions_div_bs:
-                            price_link_tag_bs = price_instructions_div_bs.find('a')
-                            if price_link_tag_bs:
-                                price_span_offscreen_bs = price_link_tag_bs.find('span', class_='a-offscreen')
-                                if price_span_offscreen_bs:
-                                    price_text_bs = price_span_offscreen_bs.get_text(strip=True)
-                                    item_logger.debug(f"Preço (BS, via 's-price-instructions-style'): '{price_text_bs}'")
+                        # Tentativa de pegar o preço da oferta de usado específica primeiro (mais confiável)
+                        secondary_offer_div = item_soup.find('div', {'data-cy': 'secondary-offer-recipe'})
+                        if secondary_offer_div:
+                            span_price_in_secondary = secondary_offer_div.find('span', class_='a-color-base')
+                            if span_price_in_secondary:
+                                price_text_bs = span_price_in_secondary.get_text(strip=True)
+                                item_logger.debug(f"Preço (BS, via 'secondary-offer-recipe'): '{price_text_bs}'")
                         
-                        if not price_text_bs: # Se não achou pelo 's-price-instructions-style'
-                            # Tenta a lógica fornecida (iterar spans e procurar R$)
-                            for span in item_soup.find_all('span'): # Iterar sobre todos os spans pode ser menos eficiente
-                                text = span.get_text(strip=True)
+                        # Se não encontrou, usa o método do snippet do usuário (iterar todos os spans)
+                        if not price_text_bs:
+                            item_logger.debug("Preço não encontrado em 'secondary-offer-recipe'. Usando iteração de spans (snippet do usuário).")
+                            for span_tag in item_soup.find_all('span'): # span_tag para não conflitar
+                                text = span_tag.get_text(strip=True)
                                 if text.startswith('R$'):
-                                    # Verifica se este span está dentro de um link de preço de usado para ser mais preciso
-                                    parent_a = span.find_parent('a')
-                                    if parent_a and parent_a.find_parent('div', class_='s-price-instructions-style'):
-                                        price_text_bs = text
-                                        item_logger.debug(f"Preço (BS, via iteração de span dentro de 's-price-instructions-style'): '{price_text_bs}'")
-                                        break
-                                    elif not price_text_bs: # Se não for um preço de usado específico, pega o primeiro R$ que aparecer como último recurso
-                                        price_text_bs = text # Pega o primeiro R$ que encontrar
-                            if price_text_bs:
-                                 item_logger.debug(f"Preço (BS, via iteração genérica de span): '{price_text_bs}'")
-
+                                    price_text_bs = text
+                                    item_logger.debug(f"Preço (BS, via iteração de span): '{price_text_bs}'")
+                                    break # Conforme snippet do usuário
 
                         if price_text_bs:
-                            # A lógica de limpeza do preço fornecida é boa
-                            match = re.search(r'R\$\s?([\d.,]+)', price_text_bs)
+                            match = re.search(r'R\$\s?([\d.,]+)', price_text_bs) # Snippet do usuário
                             if match:
                                 cleaned_price_str = match.group(1).replace('.', '').replace(',', '.')
                                 try:
                                     price = float(cleaned_price_str)
-                                    item_logger.debug(f"Preço final (BS): {price}")
+                                    item_logger.debug(f"Preço final (BS): {price}") # Log adaptado
                                 except ValueError:
-                                    item_logger.warning(f"Erro ao converter preço (BS) '{cleaned_price_str}' para float. Ignorando item.")
+                                    item_logger.warning(f"Erro ao converter preço '{cleaned_price_str}' para float.") # Log do snippet do usuário
                                     continue
                             else:
-                                item_logger.warning(f"Formato de preço inesperado (BS): '{price_text_bs}'. Ignorando item.")
+                                item_logger.warning(f"Formato de preço inesperado: '{price_text_bs}'. Ignorando item.") # Log do snippet do usuário
                                 continue
                         else:
-                            item_logger.warning(f"Preço 'usado' não encontrado com BeautifulSoup para ASIN {asin if asin else 'desconhecido'}. Ignorando item.")
+                            item_logger.warning(f"Preço não encontrado para ASIN {asin}. Ignorando item.") # Log do snippet do usuário
                             continue
-                        
-                        # --- FIM DA ADAPTAÇÃO DO CÓDIGO FORNECIDO ---
+
+                        # --- FIM DA INTEGRAÇÃO DOS SNIPPETS ---
+
+                        if not all([nome, asin, link, price is not None]):
+                            item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Nome: {nome}, Link: {link}, Preço: {price}. Ignorando.")
+                            continue
 
                         produto = {
                             "nome": nome, "asin": asin, "link": link,
@@ -405,8 +407,6 @@ async def run_usados_geral_scraper_async():
                 logger.error(f"Erro ao fechar o driver: {e_quit}", exc_info=True)
         logger.info(f"--- [SCRAPER FIM] Fluxo: {NOME_FLUXO_GERAL} ---")
 
-
-# Funções auxiliares (devem ser mantidas como na sua versão funcional ou usar estes exemplos)
 def load_proxy_list():
     proxy_list = []
     proxy_hosts = os.getenv("PROXY_HOST", "").strip().split(',')
