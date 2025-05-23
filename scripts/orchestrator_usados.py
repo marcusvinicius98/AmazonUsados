@@ -88,7 +88,7 @@ MAX_PAGINAS_POR_LINK_GLOBAL = 10
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
 GLOBAL_HISTORY_FILENAME = "price_history_USADOS_GLOBAL.json"
-CONCURRENCY_LIMIT = 5  # Limite de scrapes simultâneos
+CONCURRENCY_LIMIT = 3  # Reduzido para evitar bloqueios
 
 os.makedirs(HISTORY_DIR_BASE, exist_ok=True)
 os.makedirs(DEBUG_LOGS_DIR_BASE, exist_ok=True)
@@ -119,7 +119,7 @@ def iniciar_driver_sync_worker(logger, driver_path=None):
         service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.set_page_load_timeout(30)
+    driver.set_page_load_timeout(45)  # Aumentado para CircleCI
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
     return driver
 
@@ -187,7 +187,7 @@ def check_captcha_sync_worker(driver, logger):
 
 def wait_for_page_load(driver, logger):
     try:
-        WebDriverWait(driver, 30).until(
+        WebDriverWait(driver, 45).until(  # Aumentado para CircleCI
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
         logger.info("Página carregada completamente.")
@@ -230,7 +230,7 @@ async def process_category(
                     await asyncio.sleep(5)
                     continue
 
-                await asyncio.to_thread(WebDriverWait(driver, 30).until, EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)))
+                await asyncio.to_thread(WebDriverWait(driver, 45).until, EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)))
                 items = await asyncio.to_thread(driver.find_elements, By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
                 category_specific_logger.info(f"[{nome_categoria}] Página {page}: Encontrados {len(items)} itens.")
 
@@ -276,8 +276,8 @@ async def process_category(
                         except NoSuchElementException:
                             continue
 
-                        nome = (await asyncio.to_thread(item.find_element, By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO).text))[:150]
-                        link = await asyncio.to_thread(item.find_element, By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO).get_attribute('href'))
+                        nome = (await asyncio.to_thread(item.find_element, By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO)).text[:150]
+                        link = (await asyncio.to_thread(item.find_element, By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO)).get_attribute('href')
                         preco = await asyncio.to_thread(get_price_from_element, item, category_specific_logger)
                         asin = await asyncio.to_thread(item.get_attribute, 'data-asin')
 
