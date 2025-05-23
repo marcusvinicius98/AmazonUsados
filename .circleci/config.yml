@@ -15,7 +15,7 @@ jobs:
     environment:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
-      USAR_HISTORICO_GLOBAL_USADOS: << pipeline.parameters.usar_historico_usados >>
+      USAR_HISTORICO_USADOS: << pipeline.parameters.usar_historico_usados >>
     steps:
       - checkout
       - run:
@@ -23,6 +23,8 @@ jobs:
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
+            # Verificar se fake-useragent está instalado
+            pip show fake-useragent || echo "fake-useragent não encontrado!"
       - restore_cache:
           name: Restaurar histórico
           keys:
@@ -30,15 +32,15 @@ jobs:
             - v1-usados-historico-cache-
       - run:
           name: Executar Script Orquestrador
-          no_output_timeout: 45m  # Aumentado para lidar com timeouts
+          no_output_timeout: 45m
           command: python scripts/orchestrator_usados.py
       - run:
           name: Verificar arquivos gerados
           command: |
             echo "Conteúdo de history_files_usados:"
             ls -la history_files_usados/ || echo "Diretório vazio."
-            if [ -f history_files_usados/price_history_USADOS_GLOBAL.json ]; then
-              head -n 20 history_files_usados/price_history_USADOS_GLOBAL.json
+            if [ -f history_files_usados/price_history_USADOS_GERAL.json ]; then
+              head -n 20 history_files_usados/price_history_USADOS_GERAL.json
             else
               echo "Arquivo de histórico não encontrado."
             fi
@@ -62,9 +64,4 @@ jobs:
       - store_artifacts:
           path: "debug_logs_usados"
           destination: debug_logs_usados
-          when: always
-
-workflows:
-  workflow_usados:
-    jobs:
-      - executar_scraper_usados
+          when:
