@@ -22,24 +22,37 @@ jobs:
           name: Instalar dependências Python
           command: |
             python -m pip install --upgrade pip
-            pip install selenium python-telegram-bot==20.3 webdriver-manager
+            pip install -r requirements.txt
       - restore_cache:
           name: Restaurar histórico
           keys:
-            - v1-usados-historico-cache-{{ .Branch }}-
+            - v1-usados-historico-cache-{{ checksum "requirements.txt" }}
             - v1-usados-historico-cache-
       - run:
           name: Executar Script Orquestrador
-          no_output_timeout: 30m
+          no_output_timeout: 45m  # Aumentado para lidar com timeouts
           command: python scripts/orchestrator_usados.py
       - run:
           name: Verificar arquivos gerados
           command: |
+            echo "Conteúdo de history_files_usados:"
             ls -la history_files_usados/ || echo "Diretório vazio."
+            if [ -f history_files_usados/price_history_USADOS_GLOBAL.json ]; then
+              head -n 20 history_files_usados/price_history_USADOS_GLOBAL.json
+            else
+              echo "Arquivo de histórico não encontrado."
+            fi
+            echo "Conteúdo de debug_logs_usados:"
             ls -la debug_logs_usados/ || echo "Diretório vazio."
+            for log in debug_logs_usados/*.log; do
+              if [ -f "$log" ]; then
+                echo "Últimas 20 linhas de $log:"
+                tail -n 20 "$log"
+              fi
+            done
       - save_cache:
           name: Salvar histórico
-          key: v1-usados-historico-cache-{{ .Branch }}-{{ epoch }}
+          key: v1-usados-historico-cache-{{ checksum "requirements.txt" }}-{{ epoch }}
           paths:
             - "history_files_usados"
       - store_artifacts:
@@ -55,3 +68,10 @@ workflows:
   workflow_usados:
     jobs:
       - executar_scraper_usados
+    triggers:
+      - schedule:
+          cron: "0 8 * * *"  # Roda diariamente às 08:00 UTC (05:00 BRT)
+          filters:
+            branches:
+              only:
+                - main
