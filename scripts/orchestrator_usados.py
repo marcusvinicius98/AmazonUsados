@@ -9,7 +9,7 @@ import requests
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 from fake_useragent import UserAgent
-from bs4 import BeautifulSoup # IMPORTAR BEAUTIFULSOUP
+from bs4 import BeautifulSoup
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -43,7 +43,7 @@ logger = logging.getLogger("SCRAPER_USADOS_GERAL")
 # --- Configurações do Scraper ---
 SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
 SELETOR_INDICADOR_USADO_XPATH = ".//div[contains(@class, 's-price-instructions-style')]//a//span[contains(translate(., 'USADO', 'usado'), 'usado')]"
-SELETOR_RESULTADOS_CONT = "div.s-main-slot.s-result-list"
+SELETOR_RESULTADOS_CONT = "div.s-main-slot.s-result-list.s-search-results.sg-row" # Atualizado para maior precisão
 
 URL_GERAL_USADOS_BASE = (
     "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011"
@@ -71,13 +71,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_LINK_GLOBAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "500"))
+MAX_PAGINAS_POR_LINK_GLOBAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "500")) # Será sobrescrito pelo log para 1 ou 2
 logger.info(f"Máximo de páginas para busca geral de usados: {MAX_PAGINAS_POR_LINK_GLOBAL}")
 
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
 HISTORY_FILENAME_USADOS_GERAL = "price_history_USADOS_GERAL.json"
-# DEBUG_LOG_FILENAME_BASE_USADOS_GERAL = "scrape_debug_usados_geral" # Não usado diretamente para nome de arquivo de página
 
 os.makedirs(HISTORY_DIR_BASE, exist_ok=True)
 logger.info(f"Diretório de histórico '{HISTORY_DIR_BASE}' verificado/criado.")
@@ -101,10 +100,17 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
     pagina_atual = 1
     max_tentativas_pagina = 3
     consecutive_empty_pages = 0
-    max_consecutive_empty_pages = 3
+    max_consecutive_empty_pages = 3 # Se 3 páginas seguidas não tiverem itens, para.
+
+    # Atualiza max_paginas se a variável de ambiente foi definida para um valor menor (como visto nos logs)
+    # Esta linha assume que MAX_PAGINAS_POR_LINK_GLOBAL já reflete o valor do os.getenv no início do script
+    # Se MAX_PAGINAS_USADOS_GERAL é 1 ou 2 nos logs, a variável max_paginas já terá esse valor.
+    if max_paginas != MAX_PAGINAS_POR_LINK_GLOBAL:
+        logger.info(f"O parâmetro 'max_paginas' ({max_paginas}) é diferente de MAX_PAGINAS_POR_LINK_GLOBAL ({MAX_PAGINAS_POR_LINK_GLOBAL}). Usando {max_paginas}.")
+
 
     while pagina_atual <= max_paginas:
-        url_pagina = get_url_for_page_worker(base_url, pagina_atual, logger) # Função auxiliar
+        url_pagina = get_url_for_page_worker(base_url, pagina_atual, logger)
         logger.info(f"[{nome_fluxo}] Carregando Página: {pagina_atual}/{max_paginas}, URL: {url_pagina}")
 
         page_processed_successfully = False
@@ -113,26 +119,25 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
             try:
                 await asyncio.to_thread(driver.get, url_pagina)
                 await asyncio.sleep(random.uniform(3, 6))
-                await asyncio.to_thread(wait_for_page_load, driver, logger) # Função auxiliar
-                await simulate_scroll(driver, logger) # Função auxiliar
+                await asyncio.to_thread(wait_for_page_load, driver, logger)
+                await simulate_scroll(driver, logger)
 
-                # >>> INÍCIO DO CÓDIGO PARA SALVAR HTML DA PÁGINA <<<
                 try:
                     timestamp_page_dump = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    page_dump_filename = f"page_dump_p{pagina_atual}_fluxo_geral_{timestamp_page_dump}.html"
+                    # Adicionado nome do fluxo ao arquivo de dump para clareza se houver múltiplos fluxos no futuro
+                    page_dump_filename = f"page_dump_p{pagina_atual}_fluxo_{nome_fluxo.replace(' ', '_')}_{timestamp_page_dump}.html"
                     page_dump_path = os.path.join(DEBUG_LOGS_DIR_BASE, page_dump_filename)
                     with open(page_dump_path, "w", encoding="utf-8") as f_html_dump:
                         f_html_dump.write(driver.page_source)
                     logger.info(f"HTML da página {pagina_atual} salvo em: {page_dump_path}")
                 except Exception as e_save_dump:
                     logger.error(f"Erro ao salvar o HTML da página {pagina_atual}: {e_save_dump}")
-                # >>> FIM DO CÓDIGO PARA SALVAR HTML DA PÁGINA <<<
 
-                if check_captcha_sync_worker(driver, logger): # Função auxiliar
+                if check_captcha_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] CAPTCHA detectado na página {pagina_atual}. Interrompendo fluxo para esta URL base.")
                     return total_produtos_usados_qualificados
 
-                if check_amazon_error_page_sync_worker(driver, logger): # Função auxiliar
+                if check_amazon_error_page_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] Página de erro da Amazon detectada na página {pagina_atual}.")
                     if tentativa < max_tentativas_pagina:
                         logger.info("Tentando novamente após delay...")
@@ -148,8 +153,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     )
                     logger.info(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' encontrado na página {pagina_atual}.")
                 except TimeoutException:
-                    logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' não encontrado na página {pagina_atual} após timeout.")
-                    # Pode ser uma página vazia ou com erro sutil, a lógica de 'items_selenium' abaixo tratará.
+                    logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' não encontrado na página {pagina_atual} após timeout. Pode ser página vazia ou com estrutura inesperada.")
+                    # Não interrompe aqui, a lógica de items_selenium abaixo verificará.
 
                 items_selenium = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
                 logger.info(f"Página {pagina_atual}: Encontrados {len(items_selenium)} elementos com seletor Selenium '{SELETOR_ITEM_PRODUTO_USADO}'.")
@@ -197,10 +202,13 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
 
                         nome_tag = item_soup.find('span', class_=['a-size-base-plus', 'a-color-base', 'a-text-normal'])
                         if not nome_tag:
-                             nome_tag = item_soup.find('h2', class_='a-size-base-plus')
+                             nome_tag = item_soup.find('h2', class_='a-size-base-plus') # Fallback
                         
                         if nome_tag:
                             nome = nome_tag.get_text(strip=True)
+                            if not nome: # Nome vazio
+                                item_logger.debug("Nome do produto vazio (BS). Ignorando.")
+                                continue
                             item_logger.debug(f"Nome (BS): '{nome}'")
                         else:
                             item_logger.warning("Nome não encontrado com BeautifulSoup. Ignorando item.")
@@ -273,7 +281,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 item_logger.info(f"ASIN {asin} não está no histórico. Novo produto 'usado' qualificado.")
                             
                             history[asin] = produto
-                            save_history_geral(history) # Função auxiliar
+                            save_history_geral(history)
                         
                         total_produtos_usados_qualificados.append(produto)
                         produtos_processados_e_notificados_na_pagina += 1
@@ -289,7 +297,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 f"🕒 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
                             )
                             for chat_id in TELEGRAM_CHAT_IDS_LIST:
-                                await send_telegram_message_async( # Função auxiliar
+                                await send_telegram_message_async(
                                     bot_instance_global, chat_id, message, ParseMode.MARKDOWN_V2, item_logger
                                 )
                     
@@ -303,7 +311,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                 if produtos_processados_e_notificados_na_pagina > 0:
                     logger.info(f"Página {pagina_atual}: {produtos_processados_e_notificados_na_pagina} produtos 'usados' qualificados, processados e notificados.")
                 else:
-                    logger.info(f"Página {pagina_atual}: Nenhum produto novo ou com preço melhorado encontrado para notificação (após todas as verificações).") # [user logs]
+                    logger.info(f"Página {pagina_atual}: Nenhum produto novo ou com preço melhorado encontrado para notificação (após todas as verificações).")
                 
                 page_processed_successfully = True
                 break 
@@ -330,47 +338,50 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
             return total_produtos_usados_qualificados
 
         pagina_atual += 1
-        await asyncio.sleep(random.uniform(5, 10)) 
+        if pagina_atual <= max_paginas : # Só dorme se houver próxima página
+             await asyncio.sleep(random.uniform(5, 10)) 
 
     logger.info(
         f"--- Concluído Fluxo: {nome_fluxo}. Máximo de páginas ({max_paginas}) atingido ou fim da paginação. "
         f"Total de produtos 'usados' qualificados encontrados nesta execução: {len(total_produtos_usados_qualificados)} ---"
-    ) # [user logs]
+    )
     return total_produtos_usados_qualificados
 
 async def run_usados_geral_scraper_async():
-    logger.info(f"--- [SCRAPER INÍCIO] Fluxo: {NOME_FLUXO_GERAL} ---") # [user logs]
+    logger.info(f"--- [SCRAPER INÍCIO] Fluxo: {NOME_FLUXO_GERAL} ---")
     driver = None
     try:
-        logger.info("Tentando iniciar o driver Selenium...") # [user logs]
+        logger.info("Tentando iniciar o driver Selenium...")
         driver = iniciar_driver_sync_worker(logger) 
         if not driver:
             logger.error("Falha crítica ao iniciar o WebDriver. Abortando scraper.")
             return
 
-        logger.info("Driver Selenium iniciado com sucesso.") # [user logs]
+        logger.info("Driver Selenium iniciado com sucesso.")
         await get_initial_cookies(driver, logger)
         
         history = {}
         if USAR_HISTORICO:
             history = load_history_geral()
         
+        # Passa MAX_PAGINAS_POR_LINK_GLOBAL explicitamente, que já leu do env var no início.
         await process_used_products_geral_async(driver, URL_GERAL_USADOS_BASE, NOME_FLUXO_GERAL, history, logger, MAX_PAGINAS_POR_LINK_GLOBAL)
-        logger.info("Processamento do fluxo de usados geral concluído.") # [user logs]
+        logger.info("Processamento do fluxo de usados geral concluído.")
 
     except Exception as e:
         logger.error(f"Erro catastrófico no fluxo geral de usados (run_usados_geral_scraper_async): {e}", exc_info=True)
     finally:
         if driver:
-            logger.info("Tentando fechar o driver Selenium...") # [user logs]
+            logger.info("Tentando fechar o driver Selenium...")
             try:
                 driver.quit()
-                logger.info("Driver Selenium fechado.") # [user logs]
+                logger.info("Driver Selenium fechado.")
             except Exception as e_quit:
                 logger.error(f"Erro ao fechar o driver: {e_quit}", exc_info=True)
-        logger.info(f"--- [SCRAPER FIM] Fluxo: {NOME_FLUXO_GERAL} ---") # [user logs]
+        logger.info(f"--- [SCRAPER FIM] Fluxo: {NOME_FLUXO_GERAL} ---")
 
-# Funções auxiliares (mantenha as suas versões originais ou use estes exemplos corrigidos)
+
+# Funções auxiliares (devem ser mantidas como na sua versão funcional ou usar estes exemplos)
 def load_proxy_list():
     proxy_list = []
     proxy_hosts = os.getenv("PROXY_HOST", "").strip().split(',')
@@ -382,39 +393,48 @@ def load_proxy_list():
         port = proxy_ports[i].strip()
         username = proxy_usernames[i].strip() if i < len(proxy_usernames) and proxy_usernames[i].strip() else None
         password = proxy_passwords[i].strip() if i < len(proxy_passwords) and proxy_passwords[i].strip() else None
-        if host and port:
-            proxy_url = f'http://{username}:{password}@{host}:{port}' if username and password else f'http://{host}:{port}'
-            proxy_list.append(proxy_url)
+        if host and port: # Host e porta devem existir
+            if not host.startswith("http"): # Garante que o host não tenha o protocolo, pois será adicionado
+                proxy_url = f'http://{username}:{password}@{host}:{port}' if username and password else f'http://{host}:{port}'
+                proxy_list.append(proxy_url)
+            else: # Se já tiver o protocolo (improvável para a variável PROXY_HOST, mas por segurança)
+                 proxy_list.append(host) # Assume que já está formatado
     
-    if not proxy_list: # Correção de sintaxe aqui
+    if not proxy_list:
         logger.warning("Nenhum proxy configurado.")
     else:
-        logger.info(f"Carregados {len(proxy_list)} proxies.") # [user logs]
+        logger.info(f"Carregados {len(proxy_list)} proxies.")
     return proxy_list
 
 def test_proxy(proxy_url, logger_param):
-    logger_param.info(f"Testando proxy: {proxy_url}") # [user logs]
+    logger_param.info(f"Testando proxy: {proxy_url}")
     try:
-        response = requests.get("https://www.amazon.com.br", proxies={"http": proxy_url, "https": proxy_url}, timeout=10)
+        # Adiciona User-Agent à requisição de teste
+        ua_test = UserAgent()
+        headers_test = {'User-Agent': ua_test.random}
+        response = requests.get("https://www.amazon.com.br", proxies={"http": proxy_url, "https": proxy_url}, timeout=10, headers=headers_test)
         if response.status_code == 200:
-            logger_param.info("Proxy funcional.")
+            logger_param.info(f"Proxy {proxy_url} testado com sucesso: Status 200")
             return True
         else:
-            logger_param.warning(f"Proxy retornou status: {response.status_code}.")
+            logger_param.warning(f"Proxy {proxy_url} retornou status inesperado: {response.status_code}")
             return False
     except requests.RequestException as e:
-        logger_param.error(f"Erro ao testar proxy: {e}") # [user logs]
+        logger_param.error(f"Erro ao testar proxy {proxy_url}: {e}")
         return False
 
 def get_working_proxy(proxy_list, logger_param):
+    if not proxy_list: # Adicionado para evitar erro se a lista estiver vazia
+        logger_param.warning("Lista de proxies vazia. Nenhum proxy para testar.")
+        return None
     for proxy_url in proxy_list:
         if test_proxy(proxy_url, logger_param):
             return proxy_url
-    logger_param.warning("Nenhum proxy funcional encontrado. Prosseguindo sem proxy.") # [user logs]
+    logger_param.warning("Nenhum proxy funcional encontrado na lista. Prosseguindo sem proxy.")
     return None
 
-def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
-    current_run_logger.info("Iniciando configuração do WebDriver...") # [user logs]
+def iniciar_driver_sync_worker(current_run_logger, driver_path=None): # Ajustes e logs conforme os seus
+    current_run_logger.info("Iniciando configuração do WebDriver...")
     chrome_options = Options()
     chrome_options.add_argument("--headless=new")
     chrome_options.add_argument("--no-sandbox")
@@ -425,83 +445,82 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     ua = UserAgent()
     user_agent = ua.random
     chrome_options.add_argument(f"user-agent={user_agent}")
-    current_run_logger.info(f"User-Agent: {user_agent}") # [user logs]
+    current_run_logger.info(f"User-Agent: {user_agent}")
     
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--disable-popup-blocking")
-    chrome_options.add_argument("--mute-audio")
-    chrome_options.add_argument("--no-first-run")
-    chrome_options.add_argument("--disable-webgl")
-    chrome_options.add_argument("--disable-webrtc")
+    chrome_options.add_argument("--disable-popup-blocking"); chrome_options.add_argument("--mute-audio")
+    chrome_options.add_argument("--no-first-run"); chrome_options.add_argument("--disable-webgl"); chrome_options.add_argument("--disable-webrtc")
     chrome_options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns,PrivacySandboxSettings4,OptimizationHints,InterestGroupStorage")
     chrome_options.add_argument("--lang=pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
     
     proxies_available = load_proxy_list()
     working_proxy_url = get_working_proxy(proxies_available, current_run_logger) if proxies_available else None
     proxy_actually_configured = False
+
     if working_proxy_url:
         current_run_logger.info(f"Configurando proxy para Selenium: {working_proxy_url}")
-        chrome_options.add_argument(f'--proxy-server={working_proxy_url}')
+        chrome_options.add_argument(f'--proxy-server={working_proxy_url}') # Selenium espera apenas host:porta ou schema://host:porta
         proxy_actually_configured = True
     else:
-        current_run_logger.warning("Nenhum proxy funcional. WebDriver iniciará sem proxy.") # [user logs]
-    current_run_logger.info(f"Opções do Chrome: {chrome_options.arguments}") # [user logs]
+        current_run_logger.warning("Nenhum proxy funcional. WebDriver iniciará sem proxy.")
+    current_run_logger.info(f"Opções do Chrome: {chrome_options.arguments}")
 
-    service = None
-    driver = None
+    service = None; driver = None
+    page_load_timeout_val = 120
     try:
-        # current_run_logger.info("Usando Service com ChromeDriverManager para instalar/gerenciar o ChromeDriver.")
         path_from_manager = ChromeDriverManager().install()
         service = Service(path_from_manager)
-        current_run_logger.info(f"ChromeDriver via Manager: {path_from_manager}") # [user logs]
+        current_run_logger.info(f"ChromeDriver via Manager: {path_from_manager}")
         
         driver = webdriver.Chrome(service=service, options=chrome_options)
-        current_run_logger.info("WebDriver instanciado.") # [user logs]
-        driver.set_page_load_timeout(120)
-        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-            'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        })
+        current_run_logger.info("WebDriver instanciado.")
+        driver.set_page_load_timeout(page_load_timeout_val)
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
         return driver
     except WebDriverException as e_wd_init:
-        if "ERR_NO_SUPPORTED_PROXIES" in str(e_wd_init) and proxy_actually_configured:
-            current_run_logger.error(f"Erro de proxy não suportado ({working_proxy_url}) ao iniciar WebDriver. Tentando sem proxy.")
+        if ("ERR_NO_SUPPORTED_PROXIES" in str(e_wd_init) or "ERR_PROXY_CONNECTION_FAILED" in str(e_wd_init)) and proxy_actually_configured:
+            current_run_logger.error(f"Erro de proxy ({working_proxy_url}) ao iniciar WebDriver: {str(e_wd_init)}. Tentando sem proxy.")
             chrome_options.arguments = [arg for arg in chrome_options.arguments if not arg.startswith('--proxy-server')]
             try:
-                driver = webdriver.Chrome(service=service, options=chrome_options)
+                driver = webdriver.Chrome(service=service, options=chrome_options) # Tenta novamente sem o argumento de proxy
                 current_run_logger.info("WebDriver instanciado sem proxy após falha inicial com proxy.")
-                driver.set_page_load_timeout(120)
+                driver.set_page_load_timeout(page_load_timeout_val)
                 driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"})
                 return driver
             except Exception as e_retry_no_proxy:
                 current_run_logger.error(f"Falha ao tentar iniciar WebDriver sem proxy após erro de proxy: {e_retry_no_proxy}", exc_info=True)
+                if driver: driver.quit()
                 raise
         else:
-            current_run_logger.error(f"WebDriverException ao iniciar WebDriver: {e_wd_init}", exc_info=True)
+            current_run_logger.error(f"WebDriverException não relacionada a proxy configurado ao iniciar WebDriver: {e_wd_init}", exc_info=True)
+            if driver: driver.quit()
             raise
     except Exception as e_init:
         current_run_logger.error(f"Erro geral ao iniciar WebDriver: {e_init}", exc_info=True)
+        if driver: driver.quit()
         raise
 
 async def get_initial_cookies(driver, logger_param):
-    logger_param.info("Acessando página inicial para obter cookies...") # [user logs]
+    logger_param.info("Acessando página inicial para obter cookies...")
     try:
         await asyncio.to_thread(driver.get, "https://www.amazon.com.br")
         await asyncio.sleep(random.uniform(3, 5))
         await asyncio.to_thread(wait_for_page_load, driver, logger_param)
-        logger_param.info("Cookies iniciais obtidos.") # [user logs]
+        logger_param.info("Cookies iniciais obtidos.")
     except Exception as e:
         logger_param.error(f"Erro ao obter cookies iniciais: {e}", exc_info=True)
 
 async def simulate_scroll(driver, logger_param):
     logger_param.debug("Simulando rolagem na página...")
     try:
-        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);")
-        await asyncio.sleep(random.uniform(1, 2)) # Reduzido
-        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, 0);")
-        # await asyncio.sleep(random.uniform(0.5, 1.5)) # Removido ou reduzido
+        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight*0.6);") # Rola 60%
+        await asyncio.sleep(random.uniform(1, 2))
+        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);") # Rola até o fim
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, 0);") # Volta ao topo
         logger_param.debug("Rolagem simulada com sucesso.")
     except Exception as e:
         logger_param.error(f"Erro ao simular rolagem: {e}", exc_info=True)
@@ -527,12 +546,12 @@ def escape_md(text):
 
 def load_history_geral():
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
-    logger.info(f"Carregando histórico de: {history_path}") # [user logs]
+    logger.info(f"Carregando histórico de: {history_path}")
     if os.path.exists(history_path):
         try:
             with open(history_path, 'r', encoding='utf-8') as f:
                 history_data = json.load(f)
-            logger.info(f"Histórico carregado: {len(history_data)} ASINs.") # [user logs]
+            logger.info(f"Histórico carregado: {len(history_data)} ASINs.")
             return history_data
         except Exception as e:
             logger.error(f"Erro ao carregar/decodificar histórico de '{history_path}': {e}. Retornando vazio.", exc_info=True)
@@ -567,7 +586,7 @@ def get_url_for_page_worker(base_url, page_number, current_run_logger):
 def check_captcha_sync_worker(driver, current_run_logger):
     current_run_logger.debug("Verificando a presença de CAPTCHA.")
     try:
-        WebDriverWait(driver, 3).until(EC.any_of( # Timeout curto para não atrasar muito
+        WebDriverWait(driver, 3).until(EC.any_of( # Timeout curto
             EC.presence_of_element_located((By.CSS_SELECTOR, "form[action*='captcha'] img")),
             EC.presence_of_element_located((By.XPATH, "//h4[contains(text(), 'Insira os caracteres')]")),
             EC.presence_of_element_located((By.XPATH, "//h4[contains(text(), 'Digite os caracteres que você vê abaixo')]")),
@@ -589,10 +608,9 @@ def check_captcha_sync_worker(driver, current_run_logger):
     except (TimeoutException, NoSuchElementException):
         current_run_logger.debug("Nenhum CAPTCHA detectado (ou timeout curto).")
         return False
-    except Exception as e_check_captcha: # Capturar outros erros inesperados
+    except Exception as e_check_captcha:
         current_run_logger.error(f"Erro inesperado ao verificar CAPTCHA: {e_check_captcha}", exc_info=True)
         return False
-
 
 def check_amazon_error_page_sync_worker(driver, current_run_logger):
     current_run_logger.debug("Verificando se é página de erro da Amazon.")
@@ -600,59 +618,61 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
     page_title_lower = ""
     try:
         page_title_lower = driver.title.lower()
-        if any(keyword in page_title_lower for keyword in ["algo deu errado", "sorry", "problema", "serviço indisponível", "error", "não encontrada"]):
+        # Palavras chave para erro no título
+        error_title_keywords = ["desculpe", "algo deu errado", "sorry", "problema", "serviço indisponível", "error", "não encontrada"]
+        if any(keyword in page_title_lower for keyword in error_title_keywords):
             current_run_logger.warning(f"Página de erro detectada pelo título: {driver.title}")
             error_page_detected = True
         
-        # Mesmo se o título indicar erro, verificar seletores pode dar mais detalhes ou confirmar.
-        error_selectors = [
+        # Seletores comuns em páginas de erro (incluindo a do "cachorro")
+        error_selectors_check = [
+            (By.XPATH, "//img[contains(@alt, 'Desculpe') or contains(@alt, 'Sorry')]"), # Imagem do cachorro
             (By.XPATH, "//*[contains(text(), 'Algo deu errado')]"),
             (By.XPATH, "//*[contains(text(), 'Desculpe-nos')]"),
             (By.XPATH, "//*[contains(text(), 'Serviço Indisponível')]"),
-            (By.CSS_SELECTOR, "div#g"), # Página "dog" da Amazon
-            (By.CSS_SELECTOR, "img[alt='Desculpe']"), # Imagem comum em páginas de erro
+            (By.CSS_SELECTOR, "div#g"), 
         ]
-        for by, selector in error_selectors:
-            try:
-                element = driver.find_element(by, selector)
-                current_run_logger.warning(f"Página de erro detectada por elemento: {selector} | Texto (se houver): {element.text[:100] if element.text else 'N/A'}")
-                error_page_detected = True
-                break 
-            except NoSuchElementException:
-                continue
-            except StaleElementReferenceException:
-                 current_run_logger.warning(f"Elemento {selector} ficou obsoleto ao checar página de erro.")
-                 continue
-
+        if not error_page_detected: # Só checa seletores se o título não indicou erro claro
+            for by, selector in error_selectors_check:
+                try:
+                    element = driver.find_element(by, selector)
+                    current_run_logger.warning(f"Página de erro detectada por elemento: {selector} | Texto (se houver): {element.text[:100] if element.text else 'N/A'}")
+                    error_page_detected = True
+                    break 
+                except NoSuchElementException:
+                    continue
+                except StaleElementReferenceException:
+                     current_run_logger.warning(f"Elemento {selector} ficou obsoleto ao checar página de erro.")
+                     continue
+        
+        # Se não detectou erro e não tem o contêiner principal de resultados, pode ser um erro sutil
         if not error_page_detected:
             try:
-                driver.find_element(By.CSS_SELECTOR, SELETOR_RESULTADOS_CONT)
+                driver.find_element(By.CSS_SELECTOR, SELETOR_RESULTADOS_CONT) # SELETOR_RESULTADOS_CONT precisa estar definido globalmente
                 current_run_logger.debug("Contêiner de resultados encontrado. Aparentemente não é página de erro.")
             except NoSuchElementException:
-                current_run_logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' NÃO encontrado. Pode ser página de erro ou vazia.")
-                # Não definir error_page_detected = True aqui automaticamente, pois pode ser apenas uma página sem resultados.
-                # A lógica de página vazia na função principal cuidará disso.
-                # Mas se o título já indicou erro, mantemos error_page_detected.
+                # Se o título também não indicou erro, pode ser uma página vazia, não necessariamente uma "página de erro da Amazon"
+                current_run_logger.warning(f"Contêiner de resultados '{SELETOR_RESULTADOS_CONT}' NÃO encontrado. Pode ser página de resultados vazia ou erro sutil.")
+                # Não definir error_page_detected = True automaticamente para não confundir com erro de bloqueio vs. busca sem resultados
         
         return error_page_detected
 
     except Exception as e:
         current_run_logger.error(f"Erro ao verificar página de erro da Amazon: {e}", exc_info=True)
-        return True # Em caso de dúvida ou erro na verificação, melhor assumir que é erro
+        return True 
     finally:
-        if error_page_detected and driver.current_url : # Salva debug se erro foi detectado
+        if error_page_detected and driver.current_url:
             timestamp_error = datetime.now().strftime('%Y%m%d_%H%M%S')
             screenshot_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"amazon_error_page_{timestamp_error}.png")
             html_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"amazon_error_page_{timestamp_error}.html")
             try:
                 driver.save_screenshot(screenshot_path)
                 current_run_logger.info(f"Screenshot da página de erro salvo em: {screenshot_path}")
-                with open(html_path, "w", encoding="utf-8") as f_html:
-                    f_html.write(driver.page_source)
+                with open(html_path, "w", encoding="utf-8") as f_html_err: # Nome de variável diferente
+                    f_html_err.write(driver.page_source)
                 current_run_logger.info(f"HTML da página de erro salvo em: {html_path}")
-            except Exception as e_save:
-                current_run_logger.error(f"Erro ao salvar debug da página de erro: {e_save}")
-
+            except Exception as e_save_err: # Nome de variável diferente
+                current_run_logger.error(f"Erro ao salvar debug da página de erro: {e_save_err}")
 
 def wait_for_page_load(driver, logger_param, timeout=60):
     logger_param.debug(f"Aguardando carregamento completo da página (timeout={timeout}s)...")
@@ -660,11 +680,28 @@ def wait_for_page_load(driver, logger_param, timeout=60):
         WebDriverWait(driver, timeout).until(
             lambda d: d.execute_script("return document.readyState") == "complete"
         )
-        logger_param.info("Página carregada (document.readyState is 'complete').") # [user logs]
+        logger_param.info("Página carregada (document.readyState is 'complete').")
     except TimeoutException:
         logger_param.warning("Timeout ao esperar carregamento completo da página.")
     except Exception as e:
         logger_param.error(f"Erro ao esperar carregamento da página: {e}", exc_info=True)
 
 if __name__ == "__main__":
+    # Para testes locais, você pode definir as variáveis de ambiente aqui ou externamente
+    # Ex: os.environ["MAX_PAGINAS_USADOS_GERAL"] = "1" 
+    # os.environ["TELEGRAM_TOKEN"] = "SEU_TOKEN"
+    # os.environ["TELEGRAM_CHAT_ID"] = "SEU_CHAT_ID"
+    # os.environ["PROXY_HOST"] = "seu_proxy_host" # opcional para teste
+    # os.environ["PROXY_PORT"] = "sua_proxy_porta" # opcional para teste
+
+    # Atualiza MAX_PAGINAS_POR_LINK_GLOBAL se a variável de ambiente foi alterada após a definição inicial
+    # Isso é mais para garantir que o valor usado no loop principal seja o mais atual do ambiente
+    current_max_pages_env = os.getenv("MAX_PAGINAS_USADOS_GERAL")
+    if current_max_pages_env:
+        try:
+            MAX_PAGINAS_POR_LINK_GLOBAL = int(current_max_pages_env)
+            logger.info(f"MAX_PAGINAS_POR_LINK_GLOBAL atualizado para: {MAX_PAGINAS_POR_LINK_GLOBAL} (via env var no __main__)")
+        except ValueError:
+            logger.warning(f"Valor inválido para MAX_PAGINAS_USADOS_GERAL no __main__: '{current_max_pages_env}'. Usando o valor inicial: {MAX_PAGINAS_POR_LINK_GLOBAL}")
+    
     asyncio.run(run_usados_geral_scraper_async())
