@@ -16,7 +16,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
       USAR_HISTORICO_USADOS: << pipeline.parameters.usar_historico_usados >>
-      MAX_PAGINAS_USADOS_GERAL: "2"
+      MAX_PAGINAS_USADOS_GERAL: "500" # Você mencionou que alterou isso para 2 nos logs para teste, o que é feito pela variável de ambiente
     steps:
       - checkout
       - run:
@@ -67,7 +67,13 @@ jobs:
             fi
             echo "Conteúdo de debug_logs_usados:"
             ls -la debug_logs_usados/ || echo "Diretório vazio."
-            for file in debug_logs_usados/*.{png,html}; do
+            # Verifica se os dumps de página HTML estão sendo criados
+            for file in debug_logs_usados/page_dump_*.html; do
+              if [ -f "$file" ]; then
+                echo "Arquivo de dump de página $file encontrado."
+              fi
+            done
+            for file in debug_logs_usados/*.{png,html}; do # Mantém a verificação original também
               if [ -f "$file" ]; then
                 echo "Arquivo $file encontrado."
               fi
@@ -82,7 +88,7 @@ jobs:
           destination: history_files_usados
           when: always
       - store_artifacts:
-          path: debug_logs_usados
+          path: debug_logs_usados # Esta seção garante que os HTMLs salvos estarão disponíveis
           destination: debug_logs_usados
           when: always
 
