@@ -3,9 +3,11 @@ import re
 import logging
 import asyncio
 import json
-import random # Adicionado para delays aleatórios
+import random
+import requests
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
+from fake_useragent import UserAgent
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
@@ -65,12 +67,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-# Ajustado para usar variável de ambiente, com um padrão mais razoável para "usados" do que 500.
-# 500 páginas na seção de usados pode levar muito tempo e ter poucos resultados nas páginas finais.
-# Se precisar de 500, defina a variável de ambiente MAX_PAGINAS_USADOS_GERAL=500
 MAX_PAGINAS_USADOS_GERAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "50"))
 logger.info(f"Máximo de páginas para busca geral de usados: {MAX_PAGINAS_USADOS_GERAL}")
-
 
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
@@ -100,9 +98,13 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920,1080")
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+    
+    # Rotação de User-Agent
+    ua = UserAgent()
+    user_agent = ua.random
     chrome_options.add_argument(f"user-agent={user_agent}")
     current_run_logger.info(f"User-Agent: {user_agent}")
+    
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
@@ -114,6 +116,14 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     chrome_options.add_argument("--disable-webrtc")
     chrome_options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns,PrivacySandboxSettings4,OptimizationHints,InterestGroupStorage")
     chrome_options.add_argument("--lang=pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+    
+    # Configuração de proxy (opcional, descomente se necessário)
+    # proxy_host = os.getenv("PROXY_HOST")
+    # proxy_port = os.getenv("PROXY_PORT")
+    # if proxy_host and proxy_port:
+    #     chrome_options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
+    #     current_run_logger.info(f"Usando proxy: http://{proxy_host}:{proxy_port}")
+    
     current_run_logger.info(f"Opções do Chrome configuradas: {chrome_options.arguments}")
 
     service = None
@@ -123,7 +133,7 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
             service = Service(driver_path)
         else:
             if driver_path:
-                 current_run_logger.warning(f"Driver_path '{driver_path}' fornecido mas não encontrado. Usando WebDriverManager.")
+                current_run_logger.warning(f"Driver_path '{driver_path}' fornecido mas não encontrado. Usando WebDriverManager.")
             current_run_logger.info("Usando Service com ChromeDriverManager para instalar/gerenciar o ChromeDriver.")
             path_from_manager = ChromeDriverManager().install()
             service = Service(path_from_manager)
@@ -137,7 +147,7 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
         current_run_logger.info("Tentando instanciar o webdriver.Chrome...")
         driver = webdriver.Chrome(service=service, options=chrome_options)
         current_run_logger.info("WebDriver instanciado com sucesso.")
-        page_load_timeout = 75
+        page_load_timeout = 90  # Aumentado de 75s para 90s
         driver.set_page_load_timeout(page_load_timeout)
         current_run_logger.info(f"Timeout de carregamento de página definido para {page_load_timeout}s.")
         driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
@@ -150,6 +160,27 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
         if driver:
             driver.quit()
         raise
+
+async def get_initial_cookies(driver, logger):
+    logger.info("Acessando página inicial para obter cookies...")
+    try:
+        await asyncio.to_thread(driver.get, "https://www.amazon.com.br")
+        await asyncio.sleep(random.uniform(3, 5))
+        await asyncio.to_thread(wait_for_page_load, driver, logger)
+        logger.info("Cookies iniciais obtidos com sucesso.")
+    except Exception as e:
+        logger.error(f"Erro ao obter cookies iniciais: {e}", exc_info=True)
+
+async def simulate_scroll(driver, logger):
+    logger.debug("Simulando rolagem na página...")
+    try:
+        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, document.body.scrollHeight);")
+        await asyncio.sleep(random.uniform(1, 3))
+        await asyncio.to_thread(driver.execute_script, "window.scrollTo(0, 0);")
+        await asyncio.sleep(random.uniform(0.5, 1.5))
+        logger.debug("Rolagem simulada com sucesso.")
+    except Exception as e:
+        logger.error(f"Erro ao simular rolagem: {e}", exc_info=True)
 
 async def send_telegram_message_async(bot, chat_id, message, parse_mode, msg_logger):
     msg_logger.debug(f"Tentando enviar mensagem para chat_id: {chat_id}")
@@ -302,32 +333,49 @@ def wait_for_page_load(driver, current_run_logger):
         current_run_logger.error(f"Erro inesperado ao aguardar carregamento da página: {e}", exc_info=True)
         return False
 
+async def check_url_status(url, logger):
+    logger.debug(f"Verificando status HTTP da URL: {url}")
+    try:
+        response = await asyncio.to_thread(requests.head, url, timeout=10)
+        logger.info(f"Status HTTP da URL: {response.status_code}")
+        return response.status_code == 200
+    except requests.RequestException as e:
+        logger.error(f"Erro ao verificar status HTTP da URL: {e}", exc_info=True)
+        return False
+
 async def process_used_products_geral_async(
     driver, base_url_usados, scraper_logger,
     history_data, min_desconto_notif, bot_inst, chat_ids
 ):
     scraper_logger.info(f"--- Iniciando processamento para: {NOME_FLUXO_GERAL} --- URL base: {base_url_usados} ---")
     
+    # Obter cookies iniciais
+    await get_initial_cookies(driver, scraper_logger)
+    
     paginas_sem_produtos_consecutivas = 0
     produtos_encontrados_total = 0
     paginas_processadas_count = 0
 
     for page_num in range(1, MAX_PAGINAS_USADOS_GERAL + 1):
-        paginas_processadas_count +=1
+        paginas_processadas_count += 1
         current_page_url = get_url_for_page_worker(base_url_usados, page_num, scraper_logger)
         scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Carregando Página: {page_num}/{MAX_PAGINAS_USADOS_GERAL}, URL: {current_page_url}")
 
-        max_load_attempts = 2 
+        # Verificar status HTTP da URL
+        if not await check_url_status(current_page_url, scraper_logger):
+            scraper_logger.warning(f"URL retornou status não-200. Tentando carregar mesmo assim.")
+
+        max_load_attempts = 3  # Aumentado de 2 para 3
         page_loaded_successfully = False
         for attempt in range(1, max_load_attempts + 1):
             scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Tentativa {attempt}/{max_load_attempts} de carregar URL.")
             try:
                 await asyncio.to_thread(driver.get, current_page_url)
-                await asyncio.sleep(random.uniform(7, 10)) 
-
+                await asyncio.sleep(random.uniform(7, 10))
+                
                 if not await asyncio.to_thread(wait_for_page_load, driver, scraper_logger):
                     scraper_logger.warning(f"Página {page_num} (tentativa {attempt}) não carregou (readyState).")
-                    await asyncio.sleep(random.uniform(5, 8) * attempt)
+                    await asyncio.sleep(random.uniform(15, 20) * attempt)  # Delay maior
                     continue
                 
                 if await asyncio.to_thread(check_amazon_error_page_sync_worker, driver, scraper_logger):
@@ -348,12 +396,24 @@ async def process_used_products_geral_async(
                     
                     if attempt == max_load_attempts:
                         scraper_logger.error(f"Página de erro da Amazon (cachorro) recebida em todas as {max_load_attempts} tentativas para a página {page_num}.")
-                    await asyncio.sleep(random.uniform(10, 15)) 
+                        # Notificar erro crítico
+                        if bot_inst and chat_ids:
+                            error_msg = f"⚠️ Erro crítico: Página de erro da Amazon em todas as {max_load_attempts} tentativas para página {page_num}."
+                            for cid in chat_ids:
+                                await send_telegram_message_async(bot_inst, cid, error_msg, ParseMode.MARKDOWN, scraper_logger)
+                    await asyncio.sleep(random.uniform(15, 20) * attempt)  # Delay maior
                     continue 
 
                 if await asyncio.to_thread(check_captcha_sync_worker, driver, scraper_logger):
                     scraper_logger.error(f"CAPTCHA na página {page_num}. Abortando este fluxo de Usados.")
+                    if bot_inst and chat_ids:
+                        captcha_msg = f"⚠️ CAPTCHA detectado na página {page_num}. Fluxo abortado."
+                        for cid in chat_ids:
+                            await send_telegram_message_async(bot_inst, cid, captcha_msg, ParseMode.MARKDOWN, scraper_logger)
                     return
+                
+                # Simular rolagem
+                await simulate_scroll(driver, scraper_logger)
                 
                 scraper_logger.debug(f"Aguardando presença de itens com seletor: '{SELETOR_ITEM_PRODUTO_USADO}'")
                 await asyncio.to_thread(
@@ -398,11 +458,11 @@ async def process_used_products_geral_async(
                 if attempt == max_load_attempts:
                     scraper_logger.error(f"Todas as {max_load_attempts} tentativas falharam para pág {page_num} (Timeout esperando itens).")
                     break 
-                await asyncio.sleep(random.uniform(8, 12) * attempt)
+                await asyncio.sleep(random.uniform(15, 20) * attempt)  # Delay maior
             except Exception as e_load:
                 scraper_logger.error(f"Erro geral ao carregar pág {page_num} (tentativa {attempt}): {e_load}", exc_info=True)
                 if attempt == max_load_attempts: break
-                await asyncio.sleep(random.uniform(8, 12) * attempt)
+                await asyncio.sleep(random.uniform(15, 20) * attempt)  # Delay maior
 
         if not page_loaded_successfully:
             scraper_logger.warning(f"Não foi possível processar pág {page_num} após {max_load_attempts} tentativas. Pulando.")
@@ -433,7 +493,7 @@ async def process_used_products_geral_async(
         current_page_products_processed = 0
         for item_idx, item_element in enumerate(items_on_page):
             scraper_logger.debug(f"Processando item {item_idx + 1}/{len(items_on_page)} na página {page_num}.")
-            asin = "N/A" # Inicializa ASIN para log de erro
+            asin = "N/A"
             try:
                 get_asin_callable = lambda: item_element.get_attribute('data-asin')
                 asin = await asyncio.to_thread(get_asin_callable)
@@ -483,11 +543,11 @@ async def process_used_products_geral_async(
                 
                 link_produto_final = f"https://www.amazon.com.br/dp/{asin}"
                 produtos_encontrados_total += 1
-                current_page_products_processed +=1
+                current_page_products_processed += 1
 
                 scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Produto: '{nome_produto[:40]}...' (ASIN:{asin}), Preço: R${preco_produto:.2f}")
 
-                last_price_in_history = None # Definido fora do if para estar disponível para desconto_msg_str
+                last_price_in_history = None
                 if USAR_HISTORICO:
                     product_history_entry = history_data.get(asin)
                     if product_history_entry and product_history_entry.get('precos'):
@@ -503,7 +563,7 @@ async def process_used_products_geral_async(
                             history_data[asin]['precos'] = history_data[asin]['precos'][-20:]
                         continue
 
-                    scraper_logger.info(f"ASIN {asin}: Novo no histórico ou preço caiu (Atual R${preco_produto:.2f} vs Anterior R${last_price_in_history if last_price_in_history is not None else 'N/A'}). Notificando.") # Adicionado is not None
+                    scraper_logger.info(f"ASIN {asin}: Novo no histórico ou preço caiu (Atual R${preco_produto:.2f} vs Anterior R${last_price_in_history if last_price_in_history is not None else 'N/A'}). Notificando.")
                     if asin not in history_data:
                         history_data[asin] = {'nome': nome_produto, 'precos': [], 'link': link_produto_final, 'fluxo_ultima_vez_visto': NOME_FLUXO_GERAL}
                     
