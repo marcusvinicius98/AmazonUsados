@@ -275,7 +275,7 @@ def load_history_geral():
         try:
             with open(history_path, 'r', encoding='utf-8') as f:
                 history_data = json.load(f)
-            logger.info(fかわHistórico carregado. {len(history_data)} ASINs no histórico.")
+            logger.info(f"Histórico carregado. {len(history_data)} ASINs no histórico.")
             return history_data
         except Exception as e:
             logger.error(f"Erro ao carregar/decodificar histórico de '{history_path}': {e}. Retornando vazio.", exc_info=True)
