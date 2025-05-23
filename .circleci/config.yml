@@ -16,7 +16,7 @@ jobs:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
       USAR_HISTORICO_USADOS: << pipeline.parameters.usar_historico_usados >>
-      MAX_PAGINAS_USADOS_GERAL: "500"
+      MAX_PAGINAS_USADOS_GERAL: "2"
     steps:
       - checkout
       - run:
