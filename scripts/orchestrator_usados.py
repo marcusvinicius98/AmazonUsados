@@ -43,7 +43,7 @@ SELETOR_FRACAO_PRECO = "span.a-price-fraction"
 SELETOR_INDICADOR_USADO = "span.a-size-base.a-color-secondary"
 SELETOR_PROXIMA_PAGINA = "a.s-pagination-item.s-pagination-next"
 
-URL_GERAL_USADOS_BASE = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true"
+URL_GERAL_USADOS_BASE = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true&page=1&qid=1748010990&xpid=71AiW8sVquI1l&ref=sr_pg_1"
 NOME_FLUXO_GERAL = "Amazon Quase Novo (Geral)"
 
 MIN_DESCONTO_USADOS_STR = os.getenv("MIN_DESCONTO_PERCENTUAL_USADOS", "40").strip()
