@@ -43,7 +43,6 @@ SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
 SELETOR_NOME_PRODUTO_USADO = "span.a-size-base-plus.a-color-base.a-text-normal"
 SELETOR_PRECO_USADO = "div.s-price-instructions-style a span.a-offscreen"
 SELETOR_INDICADOR_USADO = "div.s-price-instructions-style a span[contains(text(), 'usado')]"
-SELETOR_PROXIMA_PAGINA = "a.s-pagination-item.s-pagination-next[href*='page=']"
 
 URL_GERAL_USADOS_BASE = (
     "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011"
@@ -376,7 +375,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
 
                 if check_captcha_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] CAPTCHA detectado na página {pagina_atual}. Interrompendo.")
-                    break
+                    return total_produtos_usados
                 if check_amazon_error_page_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] Página de erro da Amazon detectada na página {pagina_atual}. Tentando novamente.")
                     if tentativa < max_tentativas:
@@ -384,7 +383,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         continue
                     else:
                         logger.error(f"[{nome_fluxo}] Falha após {max_tentativas} tentativas. Interrompendo.")
-                        break
+                        return total_produtos_usados
 
                 try:
                     WebDriverWait(driver, 10).until(
@@ -392,11 +391,15 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     )
                     logger.info(f"Seletor de item encontrado na página {pagina_atual}.")
                 except TimeoutException:
-                    logger.warning(f"Nenhum item encontrado na página {pagina_atual} com seletor: {SELETOR_ITEM_PRODUTO_USADO}")
-                    break
+                    logger.info(f"Nenhum item encontrado na página {pagina_atual} com seletor: {SELETOR_ITEM_PRODUTO_USADO}. Fim da busca.")
+                    return total_produtos_usados
 
                 items = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
                 logger.info(f"Página {pagina_atual}: Encontrados {len(items)} elementos com seletor principal.")
+
+                if len(items) == 0:
+                    logger.info(f"Página {pagina_atual} não contém produtos. Fim da busca.")
+                    return total_produtos_usados
 
                 for idx, item in enumerate(items, 1):
                     try:
@@ -479,21 +482,9 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         continue
 
                 logger.info(f"Página {pagina_atual}: {len(total_produtos_usados)} produtos 'usados' processados até agora.")
-
-                try:
-                    next_button = WebDriverWait(driver, 15).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA))
-                    )
-                    logger.info(f"Botão 'Próxima Página' encontrado na página {pagina_atual}.")
-                    pagina_atual += 1
-                    await asyncio.sleep(random.uniform(3, 7))
-                    continue
-                except TimeoutException:
-                    logger.info(f"Botão 'Próxima Página' não encontrado na página {pagina_atual}. Fim da busca.")
-                    break
-                except Exception as e:
-                    logger.error(f"Erro ao buscar botão 'Próxima Página': {e}", exc_info=True)
-                    break
+                pagina_atual += 1
+                await asyncio.sleep(random.uniform(3, 7))
+                break
 
             except Exception as e:
                 logger.error(f"Erro ao carregar página {pagina_atual}: {e}", exc_info=True)
@@ -502,9 +493,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     continue
                 else:
                     logger.error(f"Falha após {max_tentativas} tentativas na página {pagina_atual}. Interrompendo.")
-                    break
-
-        break
+                    return total_produtos_usados
 
     logger.info(
         f"--- Concluído Fluxo: {nome_fluxo}. Páginas processadas: {pagina_atual-1}. "
