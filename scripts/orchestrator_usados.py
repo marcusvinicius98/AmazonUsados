@@ -45,15 +45,15 @@ SELETOR_PROXIMA_PAGINA = "a.s-pagination-item.s-pagination-next"
 URL_GERAL_USADOS_BASE = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true"
 NOME_FLUXO_GERAL = "Amazon Quase Novo (Geral)"
 
-MIN_DESCONTO_USADOS_STR = os.getenv("MIN_DESCONTO_PERCENTUAL_USADOS", "30").strip()
+MIN_DESCONTO_USADOS_STR = os.getenv("MIN_DESCONTO_PERCENTUAL_USADOS", "40").strip() # Mantido o valor do seu log
 try:
     MIN_DESCONTO_USADOS = int(MIN_DESCONTO_USADOS_STR)
     if not (0 <= MIN_DESCONTO_USADOS <= 100):
-        logger.warning(f"MIN_DESCONTO_USADOS ({MIN_DESCONTO_USADOS}%) fora do intervalo. Usando 30%.")
-        MIN_DESCONTO_USADOS = 30
+        logger.warning(f"MIN_DESCONTO_USADOS ({MIN_DESCONTO_USADOS}%) fora do intervalo. Usando 40%.")
+        MIN_DESCONTO_USADOS = 40
 except ValueError:
-    logger.warning(f"Valor inválido para MIN_DESCONTO_PERCENTUAL_USADOS ('{MIN_DESCONTO_USADOS_STR}'). Usando 30%.")
-    MIN_DESCONTO_USADOS = 30
+    logger.warning(f"Valor inválido para MIN_DESCONTO_PERCENTUAL_USADOS ('{MIN_DESCONTO_USADOS_STR}'). Usando 40%.")
+    MIN_DESCONTO_USADOS = 40
 logger.info(f"Desconto mínimo para notificação de usados (informativo para mensagem): {MIN_DESCONTO_USADOS}%")
 
 USAR_HISTORICO_STR = os.getenv("USAR_HISTORICO_USADOS", "true").strip().lower()
@@ -64,16 +64,13 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-# !!! AJUSTADO PARA TESTE !!!
-MAX_PAGINAS_USADOS_GERAL = 2 # int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "25"))
+MAX_PAGINAS_USADOS_GERAL = 2
 logger.info(f"!!! MODO DE TESTE: Máximo de páginas para busca geral de usados: {MAX_PAGINAS_USADOS_GERAL} !!!")
-
 
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
 HISTORY_FILENAME_USADOS_GERAL = "price_history_USADOS_GERAL.json"
 DEBUG_LOG_FILENAME_BASE_USADOS_GERAL = "scrape_debug_usados_geral"
-
 
 os.makedirs(HISTORY_DIR_BASE, exist_ok=True)
 logger.info(f"Diretório de histórico '{HISTORY_DIR_BASE}' verificado/criado.")
@@ -240,10 +237,10 @@ def check_captcha_sync_worker(driver, current_run_logger):
         screenshot_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"captcha_usados_geral_{timestamp_captcha}.png")
         html_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"captcha_usados_geral_{timestamp_captcha}.html")
         try:
-            driver.save_screenshot(screenshot_path)
+            driver.save_screenshot(screenshot_path) # Não precisa de asyncio.to_thread aqui, já estamos em um contexto síncrono
             current_run_logger.info(f"Screenshot do CAPTCHA salvo em: {screenshot_path}")
             with open(html_path, "w", encoding="utf-8") as f_html:
-                f_html.write(driver.page_source)
+                f_html.write(driver.page_source) # Não precisa de asyncio.to_thread
             current_run_logger.info(f"HTML do CAPTCHA salvo em: {html_path}")
         except Exception as e_save_captcha:
             current_run_logger.error(f"Erro ao salvar debug do CAPTCHA: {e_save_captcha}")
@@ -310,7 +307,7 @@ async def process_used_products_geral_async(
                 scraper_logger.info(f"Seletor de item encontrado na página {page_num}.")
                 page_loaded_successfully = True
                 break
-            except TimeoutException:
+            except TimeoutException: # Timeout esperando por SELETOR_ITEM_PRODUTO_USADO
                 scraper_logger.warning(f"Timeout (WebDriverWait de 60s) ao esperar por itens na pág {page_num} (tentativa {attempt}).")
                 
                 timestamp_debug = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -319,16 +316,22 @@ async def process_used_products_geral_async(
                 html_path_debug = os.path.join(DEBUG_LOGS_DIR_BASE, f"{nome_arquivo_debug_base}.html")
                 
                 try:
-                    current_url_debug = await asyncio.to_thread(driver.current_url)
+                    # Correção para propriedades com asyncio.to_thread
+                    get_current_url_callable = lambda: driver.current_url
+                    current_url_debug = await asyncio.to_thread(get_current_url_callable)
                     scraper_logger.info(f"URL no momento do timeout de itens: {current_url_debug}")
+                    
                     await asyncio.to_thread(driver.save_screenshot, screenshot_path_debug)
                     scraper_logger.info(f"Screenshot do timeout de itens salvo em: {screenshot_path_debug}")
-                    page_html_debug = await asyncio.to_thread(driver.page_source)
+                    
+                    get_page_source_callable = lambda: driver.page_source
+                    page_html_debug = await asyncio.to_thread(get_page_source_callable)
                     with open(html_path_debug, "w", encoding="utf-8") as f_html:
                         f_html.write(page_html_debug)
                     scraper_logger.info(f"HTML da página do timeout de itens salvo em: {html_path_debug}")
                 except Exception as e_debug_save:
-                    scraper_logger.error(f"Erro ao salvar screenshot/HTML de debug para timeout de itens: {e_debug_save}")
+                    # Adicionado exc_info=True para detalhar o erro no log
+                    scraper_logger.error(f"Erro ao salvar screenshot/HTML de debug para timeout de itens: {e_debug_save}", exc_info=True)
 
                 try:
                     no_results_elements = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(),'Nenhum resultado para')] | //*[contains(text(),'não encontraram nenhum resultado')] | //div[contains(@class, 's-no-results')]")
@@ -431,7 +434,7 @@ async def process_used_products_geral_async(
 
                 if USAR_HISTORICO:
                     product_history_entry = history_data.get(asin)
-                    last_price_in_history = None
+                    last_price_in_history = None # Inicializa aqui para usar no cálculo de desconto_msg_str
                     if product_history_entry and product_history_entry.get('precos'):
                         last_price_in_history = product_history_entry['precos'][-1]['preco']
                     
@@ -458,14 +461,9 @@ async def process_used_products_geral_async(
                 
                 if bot_inst and chat_ids:
                     desconto_msg_str = "Novo produto no rastreamento!"
-                    # Tentativa de usar last_price_in_history para a mensagem de desconto, se disponível e USAR_HISTORICO for True
-                    if USAR_HISTORICO and product_history_entry and product_history_entry.get('precos') and len(product_history_entry['precos']) > 1:
-                        # Pega o penúltimo preço, pois o último já é o atual que acabamos de adicionar
-                        # ou o last_price_in_history se o preço não mudou mas é novo na sessão
-                        prev_price_for_msg = product_history_entry['precos'][-2]['preco'] if len(product_history_entry['precos']) > 1 else last_price_in_history
-                        if prev_price_for_msg and preco_produto < prev_price_for_msg:
-                           desconto_perc = ((prev_price_for_msg - preco_produto) / prev_price_for_msg) * 100
-                           desconto_msg_str = f"Preço caiu! Antes: R${prev_price_for_msg:.2f}. Desconto: {desconto_perc:.2f}%"
+                    if USAR_HISTORICO and last_price_in_history and preco_produto < last_price_in_history:
+                        desconto_perc = ((last_price_in_history - preco_produto) / last_price_in_history) * 100
+                        desconto_msg_str = f"Preço caiu! Antes: R${last_price_in_history:.2f}. Desconto: {desconto_perc:.2f}%"
                     
                     telegram_message = (
                         f"*{escape_md('Amazon Quase Novo!')}*\n\n"
@@ -511,7 +509,7 @@ async def process_used_products_geral_async(
     scraper_logger.info(f"--- Concluído Fluxo: {NOME_FLUXO_GERAL}. Páginas processadas: {paginas_processadas_count}. Total de produtos 'usados' qualificados encontrados: {produtos_encontrados_total} ---")
 
 async def run_usados_geral_scraper_async(history_data, driver_path_param=None):
-    scraper_logger_name = f"scraper.{DEBUG_LOG_FILENAME_BASE_USADOS_GERAL}" # Evita pontos extras se base já tiver
+    scraper_logger_name = f"scraper.{DEBUG_LOG_FILENAME_BASE_USADOS_GERAL.replace('.log', '')}" # Remove .log se estiver na base
     scraper_logger = logging.getLogger(scraper_logger_name)
     
     if not any(isinstance(h, logging.FileHandler) for h in scraper_logger.handlers):
@@ -526,7 +524,7 @@ async def run_usados_geral_scraper_async(history_data, driver_path_param=None):
     scraper_logger_level_str = os.getenv("WORKER_LOG_LEVEL", "INFO").upper()
     scraper_logger_level = getattr(logging, scraper_logger_level_str, logging.INFO)
     scraper_logger.setLevel(scraper_logger_level)
-    # scraper_logger.propagate = False # REMOVIDO para que logs INFO apareçam no console (se o root tiver StreamHandler)
+    # scraper_logger.propagate = False # Removido
 
     driver_instance = None
     scraper_logger.info(f"--- [SCRAPER INÍCIO] Fluxo: {NOME_FLUXO_GERAL} ---")
