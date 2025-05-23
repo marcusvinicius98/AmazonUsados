@@ -43,7 +43,7 @@ SELETOR_FRACAO_PRECO = "span.a-price-fraction"
 SELETOR_INDICADOR_USADO = "span.a-size-base.a-color-secondary"
 SELETOR_PROXIMA_PAGINA = "a.s-pagination-item.s-pagination-next"
 
-URL_GERAL_USADOS_BASE = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true&page=1&qid=1748010990&xpid=71AiW8sVquI1l&ref=sr_pg_1"
+URL_GERAL_USADOS_BASE = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true"
 NOME_FLUXO_GERAL = "Amazon Quase Novo (Geral)"
 
 MIN_DESCONTO_USADOS_STR = os.getenv("MIN_DESCONTO_PERCENTUAL_USADOS", "40").strip()
@@ -65,8 +65,12 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_USADOS_GERAL = 2 # !!! MODO DE TESTE !!!
-logger.info(f"!!! MODO DE TESTE: Máximo de páginas para busca geral de usados: {MAX_PAGINAS_USADOS_GERAL} !!!")
+# Ajustado para usar variável de ambiente, com um padrão mais razoável para "usados" do que 500.
+# 500 páginas na seção de usados pode levar muito tempo e ter poucos resultados nas páginas finais.
+# Se precisar de 500, defina a variável de ambiente MAX_PAGINAS_USADOS_GERAL=500
+MAX_PAGINAS_USADOS_GERAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "50"))
+logger.info(f"Máximo de páginas para busca geral de usados: {MAX_PAGINAS_USADOS_GERAL}")
+
 
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
@@ -334,7 +338,7 @@ async def process_used_products_geral_async(
                     try:
                         await asyncio.to_thread(driver.save_screenshot, dog_page_screenshot_path)
                         scraper_logger.info(f"Screenshot da página do cachorro salvo em: {dog_page_screenshot_path}")
-                        get_dog_page_html_callable = lambda: driver.page_source
+                        get_dog_page_html_callable = lambda: driver.page_source 
                         dog_page_html_content = await asyncio.to_thread(get_dog_page_html_callable)
                         with open(dog_page_html_path, "w", encoding="utf-8") as f_dog_html:
                             f_dog_html.write(dog_page_html_content)
@@ -382,8 +386,8 @@ async def process_used_products_geral_async(
                     no_results_elements = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(),'Nenhum resultado para')] | //*[contains(text(),'não encontraram nenhum resultado')] | //div[contains(@class, 's-no-results')]")
                     if no_results_elements:
                         is_no_results_visible = False
-                        for el_no_res in no_results_elements:
-                            is_el_displayed_callable = lambda el=el_no_res: el.is_displayed # Captura el no lambda
+                        for el_no_res in no_results_elements: 
+                            is_el_displayed_callable = lambda el=el_no_res: el.is_displayed 
                             if await asyncio.to_thread(is_el_displayed_callable):
                                 is_no_results_visible = True; break
                         if is_no_results_visible:
@@ -429,8 +433,9 @@ async def process_used_products_geral_async(
         current_page_products_processed = 0
         for item_idx, item_element in enumerate(items_on_page):
             scraper_logger.debug(f"Processando item {item_idx + 1}/{len(items_on_page)} na página {page_num}.")
+            asin = "N/A" # Inicializa ASIN para log de erro
             try:
-                get_asin_callable = lambda: item_element.get_attribute('data-asin') # CORRIGIDO
+                get_asin_callable = lambda: item_element.get_attribute('data-asin')
                 asin = await asyncio.to_thread(get_asin_callable)
                 if not asin:
                     scraper_logger.debug("Item sem data-asin. Pulando.")
@@ -442,7 +447,7 @@ async def process_used_products_geral_async(
                     sponsored_els = await asyncio.to_thread(item_element.find_elements, By.XPATH, xpath_sponsored)
                     if sponsored_els:
                         for sp_el in sponsored_els:
-                            is_sp_el_displayed_callable = lambda el=sp_el: el.is_displayed # CORRIGIDO
+                            is_sp_el_displayed_callable = lambda el=sp_el: el.is_displayed
                             if await asyncio.to_thread(is_sp_el_displayed_callable):
                                 is_sponsored = True; break
                     if is_sponsored:
@@ -452,7 +457,7 @@ async def process_used_products_geral_async(
                 
                 try:
                     indicador_el = await asyncio.to_thread(item_element.find_element, By.CSS_SELECTOR, SELETOR_INDICADOR_USADO)
-                    get_indicador_text_callable = lambda: indicador_el.text # CORRIGIDO
+                    get_indicador_text_callable = lambda: indicador_el.text
                     texto_indicador = (await asyncio.to_thread(get_indicador_text_callable)).lower()
                     scraper_logger.debug(f"ASIN {asin}: Texto do indicador: '{texto_indicador}'")
                     if "usado" not in texto_indicador and "recondicionado" not in texto_indicador:
@@ -465,7 +470,7 @@ async def process_used_products_geral_async(
                 nome_produto = "N/A"
                 try:
                     nome_el = await asyncio.to_thread(item_element.find_element, By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO)
-                    get_nome_text_callable = lambda: nome_el.text # CORRIGIDO
+                    get_nome_text_callable = lambda: nome_el.text
                     nome_produto = (await asyncio.to_thread(get_nome_text_callable))[:150].strip()
                 except NoSuchElementException:
                     scraper_logger.warning(f"ASIN {asin}: Nome não encontrado. Pulando.")
@@ -482,9 +487,9 @@ async def process_used_products_geral_async(
 
                 scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Produto: '{nome_produto[:40]}...' (ASIN:{asin}), Preço: R${preco_produto:.2f}")
 
+                last_price_in_history = None # Definido fora do if para estar disponível para desconto_msg_str
                 if USAR_HISTORICO:
                     product_history_entry = history_data.get(asin)
-                    last_price_in_history = None 
                     if product_history_entry and product_history_entry.get('precos'):
                         last_price_in_history = product_history_entry['precos'][-1]['preco']
                     
@@ -498,7 +503,7 @@ async def process_used_products_geral_async(
                             history_data[asin]['precos'] = history_data[asin]['precos'][-20:]
                         continue
 
-                    scraper_logger.info(f"ASIN {asin}: Novo no histórico ou preço caiu (Atual R${preco_produto:.2f} vs Anterior R${last_price_in_history if last_price_in_history else 'N/A'}). Notificando.")
+                    scraper_logger.info(f"ASIN {asin}: Novo no histórico ou preço caiu (Atual R${preco_produto:.2f} vs Anterior R${last_price_in_history if last_price_in_history is not None else 'N/A'}). Notificando.") # Adicionado is not None
                     if asin not in history_data:
                         history_data[asin] = {'nome': nome_produto, 'precos': [], 'link': link_produto_final, 'fluxo_ultima_vez_visto': NOME_FLUXO_GERAL}
                     
@@ -511,7 +516,7 @@ async def process_used_products_geral_async(
                 
                 if bot_inst and chat_ids:
                     desconto_msg_str = "Novo produto no rastreamento!"
-                    if USAR_HISTORICO and last_price_in_history and preco_produto < last_price_in_history:
+                    if USAR_HISTORICO and last_price_in_history is not None and preco_produto < last_price_in_history:
                         desconto_perc = ((last_price_in_history - preco_produto) / last_price_in_history) * 100
                         desconto_msg_str = f"Preço caiu! Antes: R${last_price_in_history:.2f}. Desconto: {desconto_perc:.2f}%"
                     
@@ -532,7 +537,7 @@ async def process_used_products_geral_async(
                 scraper_logger.warning(f"Item obsoleto (StaleElement) na página {page_num}. Pulando item.")
                 continue
             except Exception as e_item_proc:
-                scraper_logger.error(f"Erro ao processar item na pág {page_num} (ASIN: {asin if 'asin' in locals() else 'N/A'}): {e_item_proc}", exc_info=True) # Adicionado ASIN ao log
+                scraper_logger.error(f"Erro ao processar item na pág {page_num} (ASIN: {asin}): {e_item_proc}", exc_info=True)
                 continue
         
         scraper_logger.info(f"Página {page_num}: {current_page_products_processed} produtos 'usados' processados.")
