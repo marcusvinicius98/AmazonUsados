@@ -47,8 +47,10 @@ jobs:
       - run:
           name: Configurar proxy
           command: |
-            echo 'export PROXY_HOST=your_proxy_ip' >> $BASH_ENV
-            echo 'export PROXY_PORT=your_proxy_port' >> $BASH_ENV
+            echo 'export PROXY_HOST=$PROXY_HOST' >> $BASH_ENV
+            echo 'export PROXY_PORT=$PROXY_PORT' >> $BASH_ENV
+            echo 'export PROXY_USERNAME=$PROXY_USERNAME' >> $BASH_ENV
+            echo 'export PROXY_PASSWORD=$PROXY_PASSWORD' >> $BASH_ENV
       - run:
           name: Executar Script Orquestrador
           no_output_timeout: 60m
@@ -65,10 +67,9 @@ jobs:
             fi
             echo "Conteúdo de debug_logs_usados:"
             ls -la debug_logs_usados/ || echo "Diretório vazio."
-            for log in debug_logs_usados/*.log; do
-              if [ -f "$log" ]; then
-                echo "Últimas 20 linhas de $log:"
-                tail -n 20 "$log"
+            for file in debug_logs_usados/*.{png,html}; do
+              if [ -f "$file" ]; then
+                echo "Arquivo $file encontrado."
               fi
             done
       - save_cache:
