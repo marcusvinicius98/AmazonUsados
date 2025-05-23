@@ -1,5 +1,5 @@
 version: 2.1
-
+ 
 parameters:
   min_desconto_usados:
     type: string
