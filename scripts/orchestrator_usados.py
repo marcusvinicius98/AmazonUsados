@@ -95,13 +95,29 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920x1080")
+    chrome_options.add_argument("--window-size=1920,1080")
+
     user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
     chrome_options.add_argument(f"user-agent={user_agent}")
     current_run_logger.info(f"User-Agent: {user_agent}")
+
     chrome_options.add_argument("--disable-blink-features=AutomationControlled")
     chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
     chrome_options.add_experimental_option('useAutomationExtension', False)
+
+    # Novas flags para tentar reduzir fingerprinting
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--disable-popup-blocking")
+    chrome_options.add_argument("--mute-audio")
+    chrome_options.add_argument("--no-first-run")
+    chrome_options.add_argument("--disable-webgl") # Tenta desabilitar WebGL
+    chrome_options.add_argument("--disable-webrtc") # Tenta desabilitar WebRTC
+    chrome_options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns,PrivacySandboxSettings4,OptimizationHints,InterestGroupStorage")
+    
+    # Adicionar accept-language header explicitamente via options
+    chrome_options.add_argument("--lang=pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+
+
     current_run_logger.info(f"Opções do Chrome configuradas: {chrome_options.arguments}")
 
     service = None
@@ -128,8 +144,13 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
         page_load_timeout = 75
         driver.set_page_load_timeout(page_load_timeout)
         current_run_logger.info(f"Timeout de carregamento de página definido para {page_load_timeout}s.")
-        driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-        current_run_logger.info("Script para ocultar 'navigator.webdriver' executado.")
+        
+        # Tenta definir navigator.webdriver como undefined o mais cedo possível
+        # Esta é uma forma de fazer isso antes de carregar qualquer URL.
+        driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+            'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        })
+        current_run_logger.info("Script para ocultar 'navigator.webdriver' configurado para rodar em novos documentos.")
         return driver
     except Exception as e:
         current_run_logger.error(f"Erro ao instanciar ou configurar o WebDriver: {e}", exc_info=True)
@@ -157,7 +178,6 @@ def escape_md(text):
     return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', str(text))
 
 def get_price_from_element(element, price_logger):
-    # ... (código da função mantido como antes) ...
     price_logger.debug("Tentando extrair preço do elemento.")
     try:
         price_whole_el = element.find_element(By.CSS_SELECTOR, SELETOR_PRECO_USADO)
@@ -182,7 +202,6 @@ def get_price_from_element(element, price_logger):
         return None
 
 def load_history_geral():
-    # ... (código da função mantido como antes) ...
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
     logger.info(f"Tentando carregar histórico de: {history_path}")
     if os.path.exists(history_path):
@@ -199,7 +218,6 @@ def load_history_geral():
         return {}
 
 def save_history_geral(history):
-    # ... (código da função mantido como antes) ...
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
     logger.info(f"Tentando salvar histórico ({len(history)} ASINs) em: {history_path}")
     try:
@@ -209,9 +227,7 @@ def save_history_geral(history):
     except Exception as e:
         logger.error(f"Erro ao salvar histórico em '{history_path}': {e}", exc_info=True)
 
-
 def get_url_for_page_worker(base_url, page_number, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug(f"Gerando URL para página {page_number} a partir de base: {base_url}")
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
@@ -230,7 +246,6 @@ def get_url_for_page_worker(base_url, page_number, current_run_logger):
     return final_url
 
 def check_captcha_sync_worker(driver, current_run_logger):
-    # ... (código da função mantido e melhorado como antes) ...
     current_run_logger.debug("Verificando a presença de CAPTCHA.")
     try:
         WebDriverWait(driver, 3).until(EC.any_of( 
@@ -259,11 +274,10 @@ def check_captcha_sync_worker(driver, current_run_logger):
         current_run_logger.error(f"Erro inesperado ao verificar CAPTCHA: {e}", exc_info=True)
         return False
 
-# NOVA FUNÇÃO PARA CHECAR PÁGINA DE ERRO DA AMAZON
 def check_amazon_error_page_sync_worker(driver, current_run_logger):
     current_run_logger.debug("Verificando se é página de erro da Amazon ('Algo deu errado').")
     try:
-        page_title = driver.title # Propriedade, não precisa de lambda com to_thread se chamada de contexto síncrono
+        page_title = driver.title
         if "Algo deu errado" in page_title or "Something went wrong" in page_title:
             current_run_logger.warning(f"Página de erro da Amazon detectada pelo título: '{page_title}'")
             return True
@@ -271,7 +285,7 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
         error_elements = driver.find_elements(By.XPATH, "//h1[contains(text(), 'DESCULPE')] | //p[contains(text(), 'algo deu errado')] | //*[contains(text(), 'Tente novamente ou volte para')] | //img[contains(@alt, ' cachorro ') or contains(@alt, ' dog ')]")
         if error_elements:
             for el in error_elements:
-                if el.is_displayed(): # Método, não precisa de lambda com to_thread se chamada de contexto síncrono
+                if el.is_displayed():
                     current_run_logger.warning(f"Página de erro da Amazon detectada por texto/imagem: '{el.text[:100] if el.text else 'Imagem de cachorro'}'")
                     return True
         current_run_logger.debug("Nenhuma indicação clara de página de erro da Amazon encontrada.")
@@ -281,7 +295,6 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
         return False
 
 def wait_for_page_load(driver, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug("Aguardando carregamento completo da página (document.readyState).")
     try:
         WebDriverWait(driver, 60).until( 
@@ -311,58 +324,58 @@ async def process_used_products_geral_async(
         current_page_url = get_url_for_page_worker(base_url_usados, page_num, scraper_logger)
         scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Carregando Página: {page_num}/{MAX_PAGINAS_USADOS_GERAL}, URL: {current_page_url}")
 
-        max_load_attempts = 2 # Reduzido para 2 tentativas
+        max_load_attempts = 2 
         page_loaded_successfully = False
         for attempt in range(1, max_load_attempts + 1):
             scraper_logger.info(f"[{NOME_FLUXO_GERAL}] Tentativa {attempt}/{max_load_attempts} de carregar URL.")
             try:
                 await asyncio.to_thread(driver.get, current_page_url)
-                await asyncio.sleep(random.uniform(7, 10)) # Delay aumentado e aleatorizado
+                await asyncio.sleep(random.uniform(7, 10)) # DELAY AUMENTADO E ALEATORIZADO
 
                 if not await asyncio.to_thread(wait_for_page_load, driver, scraper_logger):
                     scraper_logger.warning(f"Página {page_num} (tentativa {attempt}) não carregou (readyState).")
-                    await asyncio.sleep(random.uniform(5, 8) * attempt) # Backoff aleatorizado
+                    await asyncio.sleep(random.uniform(5, 8) * attempt)
                     continue
                 
-                # CHECAGEM DA PÁGINA DE ERRO DA AMAZON (CACHORRO)
+                # CHECAGEM PÁGINA DE ERRO E CAPTCHA
                 if await asyncio.to_thread(check_amazon_error_page_sync_worker, driver, scraper_logger):
-                    scraper_logger.error(f"PÁGINA DE ERRO DA AMAZON (CACHORRO) detectada na página {page_num}, tentativa {attempt}. URL: {driver.current_url}")
+                    scraper_logger.error(f"PÁGINA DE ERRO DA AMAZON (CACHORRO) detectada na página {page_num}, tentativa {attempt}.")
+                    # Salvar debug da página de erro
                     timestamp_err_dog = datetime.now().strftime('%Y%m%d_%H%M%S')
                     dog_page_screenshot_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"amazon_dog_error_p{page_num}_t{attempt}_{timestamp_err_dog}.png")
                     dog_page_html_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"amazon_dog_error_p{page_num}_t{attempt}_{timestamp_err_dog}.html")
                     try:
                         await asyncio.to_thread(driver.save_screenshot, dog_page_screenshot_path)
                         scraper_logger.info(f"Screenshot da página do cachorro salvo em: {dog_page_screenshot_path}")
-                        dog_page_html_content = await asyncio.to_thread(lambda: driver.page_source) # Corrigido
+                        dog_page_html_content = await asyncio.to_thread(lambda: driver.page_source)
                         with open(dog_page_html_path, "w", encoding="utf-8") as f_dog_html:
                             f_dog_html.write(dog_page_html_content)
                         scraper_logger.info(f"HTML da página do cachorro salvo em: {dog_page_html_path}")
                     except Exception as e_save_dog_debug:
                         scraper_logger.error(f"Erro ao salvar debug da página do cachorro: {e_save_dog_debug}")
                     
-                    if attempt == max_load_attempts: # Se todas as tentativas resultam na página do cachorro
-                        scraper_logger.error(f"Página de erro da Amazon (cachorro) recebida em todas as {max_load_attempts} tentativas para a página {page_num}. Desistindo desta página e possivelmente do fluxo.")
-                        # Poderia retornar aqui para abortar todo o scraping se o bloqueio for persistente
-                        # return 
-                    await asyncio.sleep(random.uniform(10, 15)) # Delay maior antes de próxima tentativa
-                    continue # Pula para a próxima tentativa de carregar esta URL
+                    if attempt == max_load_attempts:
+                        scraper_logger.error(f"Página de erro da Amazon (cachorro) em todas as {max_load_attempts} tentativas para pág {page_num}. Desistindo desta página.")
+                        # Aqui, não damos 'return', deixamos o 'continue' e o 'if not page_loaded_successfully' tratar.
+                    await asyncio.sleep(random.uniform(10, 15)) # Delay maior antes de próxima tentativa se for página de erro
+                    continue # Pula para a próxima tentativa desta URL
 
                 if await asyncio.to_thread(check_captcha_sync_worker, driver, scraper_logger):
                     scraper_logger.error(f"CAPTCHA na página {page_num}. Abortando este fluxo de Usados.")
-                    return
+                    return # Aborta todo o scraping de usados
                 
                 scraper_logger.debug(f"Aguardando presença de itens com seletor: '{SELETOR_ITEM_PRODUTO_USADO}'")
                 await asyncio.to_thread(
-                    WebDriverWait(driver, 45).until, # Reduzido um pouco, se a página carregou, os itens devem aparecer mais rápido
+                    WebDriverWait(driver, 45).until, 
                     EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))
                 )
                 scraper_logger.info(f"Seletor de item encontrado na página {page_num}.")
                 page_loaded_successfully = True
-                break
-            except TimeoutException:
+                break # Sucesso, sai do loop de tentativas
+            except TimeoutException: # Timeout esperando por SELETOR_ITEM_PRODUTO_USADO
                 scraper_logger.warning(f"Timeout (WebDriverWait de 45s) ao esperar por itens na pág {page_num} (tentativa {attempt}).")
                 timestamp_debug = datetime.now().strftime('%Y%m%d_%H%M%S')
-                nome_arquivo_debug_base = f"timeout_NO_items_p{page_num}_t{attempt}_{timestamp_debug}" # Nome diferente para este timeout
+                nome_arquivo_debug_base = f"timeout_NO_items_p{page_num}_t{attempt}_{timestamp_debug}"
                 screenshot_path_debug = os.path.join(DEBUG_LOGS_DIR_BASE, f"{nome_arquivo_debug_base}.png")
                 html_path_debug = os.path.join(DEBUG_LOGS_DIR_BASE, f"{nome_arquivo_debug_base}.html")
                 try:
@@ -378,22 +391,25 @@ async def process_used_products_geral_async(
                     scraper_logger.info(f"HTML da página do timeout de itens salvo em: {html_path_debug}")
                 except Exception as e_debug_save:
                     scraper_logger.error(f"Erro ao salvar screenshot/HTML de debug para timeout de itens: {e_debug_save}", exc_info=True)
+                
+                # Checagem de "Nenhum resultado" aqui também é útil se o timeout for a causa
                 try:
                     no_results_elements = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(),'Nenhum resultado para')] | //*[contains(text(),'não encontraram nenhum resultado')] | //div[contains(@class, 's-no-results')]")
-                    if no_results_elements: # ... (código de checagem de nenhum resultado)
+                    if no_results_elements:
                         is_no_results_visible = False
                         for el_no_res in no_results_elements:
                             if await asyncio.to_thread(el_no_res.is_displayed):
                                 is_no_results_visible = True; break
                         if is_no_results_visible:
-                            scraper_logger.info(f"Página {page_num} indica 'Nenhum resultado' (visível). Fim dos produtos.")
-                            return
+                            scraper_logger.info(f"Página {page_num} indica 'Nenhum resultado' (visível após timeout de itens). Fim dos produtos.")
+                            return 
                 except Exception as e_no_res_check:
-                     scraper_logger.warning(f"Erro ao checar por 'Nenhum resultado': {e_no_res_check}")
+                     scraper_logger.warning(f"Erro ao checar por 'Nenhum resultado' após timeout de itens: {e_no_res_check}")
+                
                 if attempt == max_load_attempts:
-                    scraper_logger.error(f"Todas as {max_load_attempts} tentativas de carregar pág {page_num} falharam (Timeout esperando itens). Desistindo desta página.")
+                    scraper_logger.error(f"Todas as {max_load_attempts} tentativas falharam para pág {page_num} (Timeout esperando itens).")
                     break 
-                await asyncio.sleep(random.uniform(8, 12) * attempt) # Backoff maior e aleatorizado
+                await asyncio.sleep(random.uniform(8, 12) * attempt)
             except Exception as e_load:
                 scraper_logger.error(f"Erro geral ao carregar pág {page_num} (tentativa {attempt}): {e_load}", exc_info=True)
                 if attempt == max_load_attempts: break
@@ -402,13 +418,11 @@ async def process_used_products_geral_async(
         if not page_loaded_successfully:
             scraper_logger.warning(f"Não foi possível processar pág {page_num} após {max_load_attempts} tentativas. Pulando.")
             paginas_sem_produtos_consecutivas += 1
-            if paginas_sem_produtos_consecutivas >= 2: # Reduzido para 2, já que max_attempts é 2
+            if paginas_sem_produtos_consecutivas >= 2: 
                  scraper_logger.info(f"{paginas_sem_produtos_consecutivas} páginas consecutivas sem sucesso/produtos. Finalizando busca.")
                  break
             continue
         
-        # ... (resto da função process_used_products_geral_async como estava, para extrair itens, etc.)
-        # O código abaixo é uma cópia da lógica de processamento de itens da sua versão anterior.
         items_on_page = []
         try:
             items_on_page = await asyncio.to_thread(driver.find_elements, By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
@@ -420,7 +434,7 @@ async def process_used_products_geral_async(
         if not items_on_page:
             scraper_logger.warning(f"Nenhum item de produto encontrado na página {page_num} (após carregamento bem-sucedido).")
             paginas_sem_produtos_consecutivas += 1
-            if paginas_sem_produtos_consecutivas >= 2 and page_num > 1:
+            if paginas_sem_produtos_consecutivas >= 2 and page_num > 1: # Mantido 2 para sair mais rápido se as primeiras págs estão vazias
                 scraper_logger.info(f"{paginas_sem_produtos_consecutivas} págs sem produtos. Finalizando.")
                 break
             continue
@@ -447,8 +461,7 @@ async def process_used_products_geral_async(
                     if is_sponsored:
                         scraper_logger.debug(f"ASIN {asin}: Item patrocinado. Pulando.")
                         continue
-                except Exception:
-                    pass 
+                except Exception: pass 
                 
                 try:
                     indicador_el = await asyncio.to_thread(item_element.find_element, By.CSS_SELECTOR, SELETOR_INDICADOR_USADO)
@@ -509,7 +522,7 @@ async def process_used_products_geral_async(
                 
                 if bot_inst and chat_ids:
                     desconto_msg_str = "Novo produto no rastreamento!"
-                    if USAR_HISTORICO and last_price_in_history and preco_produto < last_price_in_history: # Corrigido para usar last_price_in_history
+                    if USAR_HISTORICO and last_price_in_history and preco_produto < last_price_in_history:
                         desconto_perc = ((last_price_in_history - preco_produto) / last_price_in_history) * 100
                         desconto_msg_str = f"Preço caiu! Antes: R${last_price_in_history:.2f}. Desconto: {desconto_perc:.2f}%"
                     
@@ -535,6 +548,7 @@ async def process_used_products_geral_async(
         
         scraper_logger.info(f"Página {page_num}: {current_page_products_processed} produtos 'usados' processados.")
 
+        # Lógica de Próxima Página (mantida)
         try:
             scraper_logger.debug(f"Verificando botão 'Próxima Página' (seletor: {SELETOR_PROXIMA_PAGINA})")
             next_page_el = await asyncio.to_thread(driver.find_element, By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA)
@@ -552,14 +566,15 @@ async def process_used_products_geral_async(
             scraper_logger.error(f"Erro ao verificar 'Próxima Página': {e_next_page}", exc_info=True)
             break
         
-        delay_entre_paginas = random.uniform(int(os.getenv("DELAY_ENTRE_PAGINAS_USADOS_MIN", "7")), int(os.getenv("DELAY_ENTRE_PAGINAS_USADOS_MAX", "12")))
+        delay_entre_paginas = random.uniform(int(os.getenv("DELAY_ENTRE_PAGINAS_USADOS_MIN", "7")), 
+                                             int(os.getenv("DELAY_ENTRE_PAGINAS_USADOS_MAX", "12")))
         scraper_logger.debug(f"Aguardando {delay_entre_paginas:.2f}s antes da próxima página.")
         await asyncio.sleep(delay_entre_paginas)
+
 
     scraper_logger.info(f"--- Concluído Fluxo: {NOME_FLUXO_GERAL}. Páginas processadas: {paginas_processadas_count}. Total de produtos 'usados' qualificados encontrados: {produtos_encontrados_total} ---")
 
 async def run_usados_geral_scraper_async(history_data, driver_path_param=None):
-    # ... (código da função mantido como antes, apenas ajustando nome do logger) ...
     scraper_logger_name = f"scraper.{DEBUG_LOG_FILENAME_BASE_USADOS_GERAL.replace('.log', '')}"
     scraper_logger = logging.getLogger(scraper_logger_name)
     
@@ -575,7 +590,6 @@ async def run_usados_geral_scraper_async(history_data, driver_path_param=None):
     scraper_logger_level_str = os.getenv("WORKER_LOG_LEVEL", "INFO").upper()
     scraper_logger_level = getattr(logging, scraper_logger_level_str, logging.INFO)
     scraper_logger.setLevel(scraper_logger_level)
-    # scraper_logger.propagate = False # Removido
 
     driver_instance = None
     scraper_logger.info(f"--- [SCRAPER INÍCIO] Fluxo: {NOME_FLUXO_GERAL} ---")
@@ -616,7 +630,6 @@ async def run_usados_geral_scraper_async(history_data, driver_path_param=None):
                      logger.error(f"Erro ao fechar/remover FileHandler final para {scraper_logger.name}: {e_close_fh_final}")
 
 async def orchestrate_usados_geral_scrape_async():
-    # ... (código da função mantido como antes) ...
     logger.info("--- INICIANDO ORQUESTRADOR DE SCRAPING DE USADOS (GERAL) ---")
     current_history = load_history_geral()
     installed_driver = None
@@ -639,7 +652,6 @@ async def orchestrate_usados_geral_scrape_async():
     logger.info("--- ORQUESTRADOR DE SCRAPING DE USADOS (GERAL) CONCLUÍDO ---")
 
 if __name__ == "__main__":
-    # ... (código da função mantido como antes) ...
     script_file_name = os.path.basename(__file__)
     logger.info(f"Scraper de Usados Geral ('{script_file_name}') chamado via __main__.")
     
