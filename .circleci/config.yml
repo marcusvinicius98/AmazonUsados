@@ -19,20 +19,20 @@ jobs:
     steps:
       - checkout
       - run:
-          name: Validar ambiente e config
+          name: Validar arquivo YAML
           command: |
-            echo "Verificando arquivo config.yml..."
+            echo "Validando .circleci/config.yml..."
+            pip install yamllint
+            yamllint .circleci/config.yml || echo "Erro na validação do YAML!"
             ls -la .circleci/config.yml
             cat .circleci/config.yml
-            echo "Verificando Python e pip..."
-            python --version
-            pip --version
       - run:
           name: Instalar dependências Python
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
             pip show fake-useragent || echo "fake-useragent não encontrado!"
+            pip list
       - restore_cache:
           name: Restaurar histórico
           keys:
