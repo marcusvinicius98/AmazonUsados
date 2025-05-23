@@ -18,7 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
     NoSuchElementException, TimeoutException,
-    StaleElementReferenceException, InvalidSelectorException
+    StaleElementReferenceException, InvalidSelectorException, WebDriverException
 )
 from webdriver_manager.chrome import ChromeDriverManager
 from telegram import Bot
@@ -93,6 +93,20 @@ if TELEGRAM_TOKEN and TELEGRAM_CHAT_IDS_LIST:
 else:
     logger.warning("Token do Telegram ou Chat IDs não configurados. Notificações Telegram desabilitadas.")
 
+def test_proxy(proxy_url, logger):
+    logger.info(f"Testando proxy: {proxy_url.replace(':password@', ':****@') if ':password@' in proxy_url else proxy_url}")
+    try:
+        response = requests.get("https://www.amazon.com.br", proxies={"http": proxy_url, "https": proxy_url}, timeout=10)
+        if response.status_code == 200:
+            logger.info("Proxy testado com sucesso: Status 200")
+            return True
+        else:
+            logger.warning(f"Proxy retornou status inesperado: {response.status_code}")
+            return False
+    except requests.RequestException as e:
+        logger.error(f"Erro ao testar proxy: {e}")
+        return False
+
 def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     current_run_logger.info("Iniciando configuração do WebDriver...")
     chrome_options = Options()
@@ -123,14 +137,21 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     proxy_port = os.getenv("PROXY_PORT")
     proxy_username = os.getenv("PROXY_USERNAME")
     proxy_password = os.getenv("PROXY_PASSWORD")
+    proxy_configured = False
+    
     if proxy_host and proxy_port:
+        proxy_url = f'http://{proxy_host}:{proxy_port}'
         if proxy_username and proxy_password:
             proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
-            chrome_options.add_argument(f'--proxy-server={proxy_url}')
-            current_run_logger.info(f"Usando proxy autenticado: http://<username>:<password>@{proxy_host}:{proxy_port}")
+            current_run_logger.info(f"Configurando proxy autenticado: http://<username>:<password>@{proxy_host}:{proxy_port}")
         else:
-            chrome_options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
-            current_run_logger.info(f"Usando proxy: http://{proxy_host}:{proxy_port}")
+            current_run_logger.info(f"Configurando proxy: http://{proxy_host}:{proxy_port}")
+        
+        if test_proxy(proxy_url, current_run_logger):
+            chrome_options.add_argument(f'--proxy-server={proxy_url}')
+            proxy_configured = True
+        else:
+            current_run_logger.warning("Proxy inválido ou inativo. Prosseguindo sem proxy.")
     else:
         current_run_logger.warning("PROXY_HOST ou PROXY_PORT não configurados. Prosseguindo sem proxy.")
     
@@ -165,6 +186,22 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
         })
         current_run_logger.info("Script para ocultar 'navigator.webdriver' configurado para rodar em novos documentos.")
         return driver
+    except WebDriverException as e:
+        if "ERR_NO_SUPPORTED_PROXIES" in str(e):
+            current_run_logger.error(f"Erro: Proxy não suportado ({proxy_url if proxy_configured else 'N/A'}). Prosseguindo sem proxy.")
+            chrome_options.arguments = [arg for arg in chrome_options.arguments if not arg.startswith('--proxy-server')]
+            driver = webdriver.Chrome(service=service, options=chrome_options)
+            current_run_logger.info("WebDriver instanciado sem proxy.")
+            driver.set_page_load_timeout(page_load_timeout)
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            })
+            return driver
+        else:
+            current_run_logger.error(f"Erro ao instanciar WebDriver: {e}", exc_info=True)
+            if driver:
+                driver.quit()
+            raise
     except Exception as e:
         current_run_logger.error(f"Erro ao instanciar ou configurar o WebDriver: {e}", exc_info=True)
         if driver:
@@ -238,7 +275,7 @@ def load_history_geral():
         try:
             with open(history_path, 'r', encoding='utf-8') as f:
                 history_data = json.load(f)
-            logger.info(f"Histórico carregado. {len(history_data)} ASINs no histórico.")
+            logger.info(fかわHistórico carregado. {len(history_data)} ASINs no histórico.")
             return history_data
         except Exception as e:
             logger.error(f"Erro ao carregar/decodificar histórico de '{history_path}': {e}. Retornando vazio.", exc_info=True)
@@ -304,7 +341,7 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
     try:
         # Verificar título
         page_title = driver.title.lower()
-        if "algo deu errado" in page_title or "sorry" in page_title or "problema" in page_title:
+        if any(keyword in page_title for keyword in ["algo deu errado", "sorry", "problema", "serviço indisponível"]):
             current_run_logger.warning(f"Página de erro detectada pelo título: {page_title}")
             return True
         
@@ -313,7 +350,8 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
             (By.XPATH, "//*[contains(text(), 'Algo deu errado')]"),
             (By.XPATH, "//*[contains(text(), 'Desculpe-nos')]"),
             (By.XPATH, "//*[contains(text(), 'Serviço Indisponível')]"),
-            (By.CSS_SELECTOR, "div#centerContent div.a-box-inner h1")
+            (By.CSS_SELECTOR, "div#centerContent div.a-box-inner h1"),
+            (By.CSS_SELECTOR, "div.a-alert-content")
         ]
         for by, selector in error_selectors:
             try:
@@ -364,9 +402,22 @@ def wait_for_page_load(driver, logger, timeout=120):
 
 def check_url_status(url, logger, max_retries=5, backoff_factor=3):
     logger.debug(f"Verificando status HTTP da URL: {url}")
+    proxy_host = os.getenv("PROXY_HOST")
+    proxy_port = os.getenv("PROXY_PORT")
+    proxy_username = os.getenv("PROXY_USERNAME")
+    proxy_password = os.getenv("PROXY_PASSWORD")
+    proxies = None
+    
+    if proxy_host and proxy_port:
+        proxy_url = f'http://{proxy_host}:{proxy_port}'
+        if proxy_username and proxy_password:
+            proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
+        proxies = {"http": proxy_url, "https": proxy_url}
+        logger.debug(f"Usando proxy para verificação de status: {proxy_url.replace(':password@', ':****@') if ':password@' in proxy_url else proxy_url}")
+
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.head(url, timeout=15, allow_redirects=True)
+            response = requests.head(url, timeout=15, allow_redirects=True, proxies=proxies)
             logger.info(f"Status HTTP da URL: {response.status_code}")
             if response.status_code == 200:
                 return response.status_code
@@ -524,6 +575,17 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                 await asyncio.sleep(random.uniform(3, 7))
                 break
 
+            except WebDriverException as e:
+                if "ERR_NO_SUPPORTED_PROXIES" in str(e):
+                    logger.error(f"Proxy não suportado na página {pagina_atual}. Interrompendo.")
+                    return total_produtos_usados
+                logger.error(f"Erro ao carregar página {pagina_atual}: {e}", exc_info=True)
+                if tentativa < max_tentativas:
+                    await asyncio.sleep(random.uniform(5, 10))
+                    continue
+                else:
+                    logger.error(f"Falha após {max_tentativas} tentativas na página {pagina_atual}. Interrompendo.")
+                    return total_produtos_usados
             except Exception as e:
                 logger.error(f"Erro ao carregar página {pagina_atual}: {e}", exc_info=True)
                 if tentativa < max_tentativas:
