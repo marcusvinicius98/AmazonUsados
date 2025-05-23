@@ -93,8 +93,36 @@ if TELEGRAM_TOKEN and TELEGRAM_CHAT_IDS_LIST:
 else:
     logger.warning("Token do Telegram ou Chat IDs não configurados. Notificações Telegram desabilitadas.")
 
+def load_proxy_list():
+    """Carrega uma lista de proxies das variáveis de ambiente, sem autenticação se não fornecida."""
+    proxy_list = []
+    proxy_hosts = os.getenv("PROXY_HOST", "").strip().split(',')
+    proxy_ports = os.getenv("PROXY_PORT", "").strip().split(',')
+    proxy_usernames = os.getenv("PROXY_USERNAME", "").strip().split(',')
+    proxy_passwords = os.getenv("PROXY_PASSWORD", "").strip().split(',')
+
+    for i in range(min(len(proxy_hosts), len(proxy_ports))):
+        host = proxy_hosts[i].strip()
+        port = proxy_ports[i].strip()
+        username = proxy_usernames[i].strip() if i < len(proxy_usernames) and proxy_usernames[i].strip() else None
+        password = proxy_passwords[i].strip() if i < len(proxy_passwords) and proxy_passwords[i].strip() else None
+        
+        if host and port:
+            if username and password:
+                proxy_url = f'http://{username}:{password}@{host}:{port}'
+            else:
+                proxy_url = f'http://{host}:{port}'
+            proxy_list.append(proxy_url)
+    
+    if not proxy_list:
+        logger.warning("Nenhum proxy configurado nas variáveis de ambiente.")
+    else:
+        logger.info(f"Carregados {len(proxy_list)} proxies.")
+    return proxy_list
+
 def test_proxy(proxy_url, logger):
-    logger.info(f"Testando proxy: {proxy_url.replace(':password@', ':****@') if ':password@' in proxy_url else proxy_url}")
+    """Testa se o proxy é funcional."""
+    logger.info(f"Testando proxy: {proxy_url}")
     try:
         response = requests.get("https://www.amazon.com.br", proxies={"http": proxy_url, "https": proxy_url}, timeout=10)
         if response.status_code == 200:
@@ -109,6 +137,14 @@ def test_proxy(proxy_url, logger):
         else:
             logger.error(f"Erro ao testar proxy: {e}")
         return False
+
+def get_working_proxy(proxy_list, logger):
+    """Retorna o primeiro proxy funcional da lista ou None se todos falharem."""
+    for proxy_url in proxy_list:
+        if test_proxy(proxy_url, logger):
+            return proxy_url
+    logger.warning("Nenhum proxy funcional encontrado. Prosseguindo sem proxy.")
+    return None
 
 def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     current_run_logger.info("Iniciando configuração do WebDriver...")
@@ -136,27 +172,16 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     chrome_options.add_argument("--disable-features=WebRtcHideLocalIpsWithMdns,PrivacySandboxSettings4,OptimizationHints,InterestGroupStorage")
     chrome_options.add_argument("--lang=pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
     
-    proxy_host = os.getenv("PROXY_HOST")
-    proxy_port = os.getenv("PROXY_PORT")
-    proxy_username = os.getenv("PROXY_USERNAME")
-    proxy_password = os.getenv("PROXY_PASSWORD")
+    proxy_list = load_proxy_list()
+    proxy_url = get_working_proxy(proxy_list, current_run_logger) if proxy_list else None
     proxy_configured = False
     
-    if proxy_host and proxy_port:
-        proxy_url = f'http://{proxy_host}:{proxy_port}'
-        if proxy_username and proxy_password:
-            proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
-            current_run_logger.info(f"Configurando proxy autenticado: http://<username>:<password>@{proxy_host}:{proxy_port}")
-        else:
-            current_run_logger.info(f"Configurando proxy: http://{proxy_host}:{proxy_port}")
-        
-        if test_proxy(proxy_url, current_run_logger):
-            chrome_options.add_argument(f'--proxy-server={proxy_url}')
-            proxy_configured = True
-        else:
-            current_run_logger.warning("Proxy inválido ou inativo. Prosseguindo sem proxy.")
+    if proxy_url:
+        current_run_logger.info(f"Configurando proxy: {proxy_url}")
+        chrome_options.add_argument(f'--proxy-server={proxy_url}')
+        proxy_configured = True
     else:
-        current_run_logger.warning("PROXY_HOST ou PROXY_PORT não configurados. Prosseguindo sem proxy.")
+        current_run_logger.warning("Nenhum proxy funcional disponível. Prosseguindo sem proxy.")
     
     current_run_logger.info(f"Opções do Chrome configuradas: {chrome_options.arguments}")
 
@@ -405,23 +430,18 @@ def wait_for_page_load(driver, logger, timeout=120):
 
 def check_url_status(url, logger, max_retries=5, backoff_factor=3):
     logger.debug(f"Verificando status HTTP da URL: {url}")
-    proxy_host = os.getenv("PROXY_HOST")
-    proxy_port = os.getenv("PROXY_PORT")
-    proxy_username = os.getenv("PROXY_USERNAME")
-    proxy_password = os.getenv("PROXY_PASSWORD")
+    proxy_list = load_proxy_list()
     proxies = None
     
-    if proxy_host and proxy_port:
-        proxy_url = f'http://{proxy_host}:{proxy_port}'
-        if proxy_username and proxy_password:
-            proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
-        proxies = {"http": proxy_url, "https": proxy_url}
-        logger.debug(f"Usando proxy para verificação de status: {proxy_url.replace(':password@', ':****@') if ':password@' in proxy_url else proxy_url}")
-        if not test_proxy(proxy_url, logger):
-            logger.warning("Proxy inválido detectado em check_url_status. Prosseguindo sem proxy.")
-            proxies = None
+    if proxy_list:
+        proxy_url = get_working_proxy(proxy_list, logger)
+        if proxy_url:
+            proxies = {"http": proxy_url, "https": proxy_url}
+            logger.debug(f"Usando proxy para verificação de status: {proxy_url}")
+        else:
+            logger.warning("Nenhum proxy funcional em check_url_status. Prosseguindo sem proxy.")
     else:
-        logger.warning("PROXY_HOST ou PROXY_PORT não configurados. Verificando URL sem proxy.")
+        logger.warning("Nenhum proxy configurado. Verificando URL sem proxy.")
 
     for attempt in range(1, max_retries + 1):
         try:
