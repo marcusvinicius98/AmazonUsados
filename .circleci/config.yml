@@ -1,5 +1,5 @@
 version: 2.1
- 
+
 parameters:
   min_desconto_usados:
     type: string
@@ -19,11 +19,19 @@ jobs:
     steps:
       - checkout
       - run:
+          name: Validar ambiente e config
+          command: |
+            echo "Verificando arquivo config.yml..."
+            ls -la .circleci/config.yml
+            cat .circleci/config.yml
+            echo "Verificando Python e pip..."
+            python --version
+            pip --version
+      - run:
           name: Instalar dependências Python
           command: |
             python -m pip install --upgrade pip
             pip install -r requirements.txt
-            # Verificar se fake-useragent está instalado
             pip show fake-useragent || echo "fake-useragent não encontrado!"
       - restore_cache:
           name: Restaurar histórico
@@ -56,12 +64,17 @@ jobs:
           name: Salvar histórico
           key: v1-usados-historico-cache-{{ checksum "requirements.txt" }}-{{ epoch }}
           paths:
-            - "history_files_usados"
+            - history_files_usados
       - store_artifacts:
-          path: "history_files_usados"
+          path: history_files_usados
           destination: history_files_usados
           when: always
       - store_artifacts:
-          path: "debug_logs_usados"
+          path: debug_logs_usados
           destination: debug_logs_usados
-          when:
+          when: always
+
+workflows:
+  workflow_usados:
+    jobs:
+      - executar_scraper_usados
