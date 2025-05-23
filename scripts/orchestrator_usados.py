@@ -43,6 +43,7 @@ SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
 SELETOR_NOME_PRODUTO_USADO = "span.a-size-base-plus.a-color-base.a-text-normal"
 SELETOR_PRECO_USADO = "div.s-price-instructions-style a span.a-offscreen"
 SELETOR_INDICADOR_USADO = "div.s-price-instructions-style a span[contains(text(), 'usado')]"
+SELETOR_RESULTADOS_CONT = "div.s-main-slot.s-result-list"
 
 URL_GERAL_USADOS_BASE = (
     "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011"
@@ -120,9 +121,18 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
     
     proxy_host = os.getenv("PROXY_HOST")
     proxy_port = os.getenv("PROXY_PORT")
+    proxy_username = os.getenv("PROXY_USERNAME")
+    proxy_password = os.getenv("PROXY_PASSWORD")
     if proxy_host and proxy_port:
-        chrome_options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
-        current_run_logger.info(f"Usando proxy: http://{proxy_host}:{proxy_port}")
+        if proxy_username and proxy_password:
+            proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
+            chrome_options.add_argument(f'--proxy-server={proxy_url}')
+            current_run_logger.info(f"Usando proxy autenticado: http://<username>:<password>@{proxy_host}:{proxy_port}")
+        else:
+            chrome_options.add_argument(f'--proxy-server=http://{proxy_host}:{proxy_port}')
+            current_run_logger.info(f"Usando proxy: http://{proxy_host}:{proxy_port}")
+    else:
+        current_run_logger.warning("PROXY_HOST ou PROXY_PORT não configurados. Prosseguindo sem proxy.")
     
     current_run_logger.info(f"Opções do Chrome configuradas: {chrome_options.arguments}")
 
@@ -290,28 +300,55 @@ def check_captcha_sync_worker(driver, current_run_logger):
         return False
 
 def check_amazon_error_page_sync_worker(driver, current_run_logger):
-    current_run_logger.debug("Verificando se é página de erro da Amazon ('Algo deu errado').")
+    current_run_logger.debug("Verificando se é página de erro da Amazon.")
     try:
+        # Verificar título
         page_title = driver.title.lower()
-        if "algo deu errado" in page_title or "sorry" in page_title:
-            current_run_logger.warning(f"Página de erro da Amazon detectada! Título: {page_title}")
-            timestamp_error = datetime.now().strftime('%Y%m%d_%H%M%S')
-            screenshot_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"error_usados_geral_{timestamp_error}.png")
-            html_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"error_usados_geral_{timestamp_error}.html")
-            try:
-                driver.save_screenshot(screenshot_path)
-                current_run_logger.info(f"Screenshot da página de erro salvo em: {screenshot_path}")
-                with open(html_path, "w", encoding="utf-8") as f_html:
-                    f_html.write(driver.page_source)
-                current_run_logger.info(f"HTML da página de erro salvo em: {html_path}")
-            except Exception as e_save_error:
-                current_run_logger.error(f"Erro ao salvar debug da página de erro: {e_save_error}")
+        if "algo deu errado" in page_title or "sorry" in page_title or "problema" in page_title:
+            current_run_logger.warning(f"Página de erro detectada pelo título: {page_title}")
             return True
-        current_run_logger.debug("Nenhuma página de erro detectada.")
-        return False
+        
+        # Verificar mensagens de erro comuns
+        error_selectors = [
+            (By.XPATH, "//*[contains(text(), 'Algo deu errado')]"),
+            (By.XPATH, "//*[contains(text(), 'Desculpe-nos')]"),
+            (By.XPATH, "//*[contains(text(), 'Serviço Indisponível')]"),
+            (By.CSS_SELECTOR, "div#centerContent div.a-box-inner h1")
+        ]
+        for by, selector in error_selectors:
+            try:
+                element = driver.find_element(by, selector)
+                current_run_logger.warning(f"Página de erro detectada por elemento: {element.text}")
+                return True
+            except NoSuchElementException:
+                continue
+
+        # Verificar ausência do contêiner de resultados
+        try:
+            driver.find_element(By.CSS_SELECTOR, SELETOR_RESULTADOS_CONT)
+            current_run_logger.debug("Contêiner de resultados encontrado. Não é página de erro.")
+            return False
+        except NoSuchElementException:
+            current_run_logger.warning("Contêiner de resultados não encontrado. Considerando como página de erro.")
+            return True
+
     except Exception as e:
         current_run_logger.error(f"Erro ao verificar página de erro: {e}", exc_info=True)
-        return False
+        return True
+
+    finally:
+        if driver.current_url:
+            timestamp_error = datetime.now().strftime('%Y%m%d_%H%M%S')
+            screenshot_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"error_check_usados_geral_{timestamp_error}.png")
+            html_path = os.path.join(DEBUG_LOGS_DIR_BASE, f"error_check_usados_geral_{timestamp_error}.html")
+            try:
+                driver.save_screenshot(screenshot_path)
+                current_run_logger.info(f"Screenshot salvo em: {screenshot_path}")
+                with open(html_path, "w", encoding="utf-8") as f_html:
+                    f_html.write(driver.page_source)
+                current_run_logger.info(f"HTML salvo em: {html_path}")
+            except Exception as e_save:
+                current_run_logger.error(f"Erro ao salvar debug: {e_save}")
 
 def wait_for_page_load(driver, logger, timeout=120):
     logger.debug(f"Aguardando carregamento completo da página (timeout={timeout}s)...")
@@ -325,11 +362,11 @@ def wait_for_page_load(driver, logger, timeout=120):
     except Exception as e:
         logger.error(f"Erro ao esperar carregamento da página: {e}", exc_info=True)
 
-def check_url_status(url, logger, max_retries=3, backoff_factor=2):
+def check_url_status(url, logger, max_retries=5, backoff_factor=3):
     logger.debug(f"Verificando status HTTP da URL: {url}")
     for attempt in range(1, max_retries + 1):
         try:
-            response = requests.head(url, timeout=10, allow_redirects=True)
+            response = requests.head(url, timeout=15, allow_redirects=True)
             logger.info(f"Status HTTP da URL: {response.status_code}")
             if response.status_code == 200:
                 return response.status_code
@@ -355,7 +392,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
     logger.info(f"--- Iniciando processamento para: {nome_fluxo} --- URL base: {base_url} ---")
     total_produtos_usados = []
     pagina_atual = 1
-    max_tentativas = 3
+    max_tentativas = 5
 
     while pagina_atual <= max_paginas:
         url_pagina = get_url_for_page_worker(base_url, pagina_atual, logger)
@@ -376,6 +413,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                 if check_captcha_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] CAPTCHA detectado na página {pagina_atual}. Interrompendo.")
                     return total_produtos_usados
+
                 if check_amazon_error_page_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] Página de erro da Amazon detectada na página {pagina_atual}. Tentando novamente.")
                     if tentativa < max_tentativas:
@@ -386,12 +424,12 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         return total_produtos_usados
 
                 try:
-                    WebDriverWait(driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))
+                    WebDriverWait(driver, 15).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_RESULTADOS_CONT))
                     )
-                    logger.info(f"Seletor de item encontrado na página {pagina_atual}.")
+                    logger.info(f"Contêiner de resultados encontrado na página {pagina_atual}.")
                 except TimeoutException:
-                    logger.info(f"Nenhum item encontrado na página {pagina_atual} com seletor: {SELETOR_ITEM_PRODUTO_USADO}. Fim da busca.")
+                    logger.warning(f"Contêiner de resultados não encontrado na página {pagina_atual} com seletor: {SELETOR_RESULTADOS_CONT}. Interrompendo.")
                     return total_produtos_usados
 
                 items = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
