@@ -316,13 +316,17 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         item_logger.info(f"PRODUTO QUALIFICADO: '{nome}' | Preço: R${price:.2f} | ASIN: {asin}")
 
                         if bot_instance_global and TELEGRAM_CHAT_IDS_LIST:
+                            # Formata o preço primeiro
+                            preco_formatado_str = f"R${price:.2f}"
+                            
+                            # Monta a mensagem escapando as partes necessárias
                             message = (
                                 f"*{escape_md(nome_fluxo)}*\n\n"
-                                f"📦 *{escape_md(nome)}*\n"
-                                f"💵 Preço Usado: *R${price:.2f}*\n"
-                                f"🔗 [Ver na Amazon]({link})\n\n"
-                                f"🏷️ ASIN: `{escape_md(asin)}`\n"
-                                f"🕒 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+                                f"📦 *{escape_md(str(nome))}*\n"  # Garante que nome seja string antes de escapar
+                                f"💵 Preço Usado: *{escape_md(preco_formatado_str)}*\n"  # <--- MUDANÇA IMPORTANTE AQUI
+                                f"🔗 [Ver na Amazon]({link})\n\n"  # Links em Markdown [texto](url) geralmente não precisam ser escapados, o Telegram lida com eles.
+                                f"🏷️ ASIN: `{escape_md(str(asin))}`\n" # Garante que asin seja string
+                                f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}" # Escapar a data/hora por segurança
                             )
                             for chat_id in TELEGRAM_CHAT_IDS_LIST:
                                 await send_telegram_message_async(
