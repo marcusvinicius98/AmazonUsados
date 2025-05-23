@@ -3,7 +3,7 @@ import re
 import logging
 import asyncio
 import json
-import random
+import random # Adicionado para delays aleatórios
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 
@@ -65,7 +65,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_USADOS_GERAL = 2
+MAX_PAGINAS_USADOS_GERAL = 2 # !!! MODO DE TESTE !!!
 logger.info(f"!!! MODO DE TESTE: Máximo de páginas para busca geral de usados: {MAX_PAGINAS_USADOS_GERAL} !!!")
 
 HISTORY_DIR_BASE = "history_files_usados"
@@ -148,7 +148,6 @@ def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
         raise
 
 async def send_telegram_message_async(bot, chat_id, message, parse_mode, msg_logger):
-    # ... (código da função mantido como antes) ...
     msg_logger.debug(f"Tentando enviar mensagem para chat_id: {chat_id}")
     if not bot:
         msg_logger.error(f"[{msg_logger.name}] Instância do Bot não fornecida.")
@@ -165,11 +164,9 @@ async def send_telegram_message_async(bot, chat_id, message, parse_mode, msg_log
         return False
 
 def escape_md(text):
-    # ... (código da função mantido como antes) ...
     return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', str(text))
 
 def get_price_from_element(element, price_logger):
-    # ... (código da função mantido como antes) ...
     price_logger.debug("Tentando extrair preço do elemento.")
     try:
         price_whole_el = element.find_element(By.CSS_SELECTOR, SELETOR_PRECO_USADO)
@@ -194,7 +191,6 @@ def get_price_from_element(element, price_logger):
         return None
 
 def load_history_geral():
-    # ... (código da função mantido como antes) ...
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
     logger.info(f"Tentando carregar histórico de: {history_path}")
     if os.path.exists(history_path):
@@ -211,7 +207,6 @@ def load_history_geral():
         return {}
 
 def save_history_geral(history):
-    # ... (código da função mantido como antes) ...
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
     logger.info(f"Tentando salvar histórico ({len(history)} ASINs) em: {history_path}")
     try:
@@ -222,7 +217,6 @@ def save_history_geral(history):
         logger.error(f"Erro ao salvar histórico em '{history_path}': {e}", exc_info=True)
 
 def get_url_for_page_worker(base_url, page_number, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug(f"Gerando URL para página {page_number} a partir de base: {base_url}")
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
@@ -241,7 +235,6 @@ def get_url_for_page_worker(base_url, page_number, current_run_logger):
     return final_url
 
 def check_captcha_sync_worker(driver, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug("Verificando a presença de CAPTCHA.")
     try:
         WebDriverWait(driver, 3).until(EC.any_of( 
@@ -271,7 +264,6 @@ def check_captcha_sync_worker(driver, current_run_logger):
         return False
 
 def check_amazon_error_page_sync_worker(driver, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug("Verificando se é página de erro da Amazon ('Algo deu errado').")
     try:
         page_title = driver.title 
@@ -292,7 +284,6 @@ def check_amazon_error_page_sync_worker(driver, current_run_logger):
         return False
 
 def wait_for_page_load(driver, current_run_logger):
-    # ... (código da função mantido como antes) ...
     current_run_logger.debug("Aguardando carregamento completo da página (document.readyState).")
     try:
         WebDriverWait(driver, 60).until( 
@@ -343,7 +334,7 @@ async def process_used_products_geral_async(
                     try:
                         await asyncio.to_thread(driver.save_screenshot, dog_page_screenshot_path)
                         scraper_logger.info(f"Screenshot da página do cachorro salvo em: {dog_page_screenshot_path}")
-                        get_dog_page_html_callable = lambda: driver.page_source # CORRIGIDO
+                        get_dog_page_html_callable = lambda: driver.page_source
                         dog_page_html_content = await asyncio.to_thread(get_dog_page_html_callable)
                         with open(dog_page_html_path, "w", encoding="utf-8") as f_dog_html:
                             f_dog_html.write(dog_page_html_content)
@@ -391,8 +382,9 @@ async def process_used_products_geral_async(
                     no_results_elements = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(),'Nenhum resultado para')] | //*[contains(text(),'não encontraram nenhum resultado')] | //div[contains(@class, 's-no-results')]")
                     if no_results_elements:
                         is_no_results_visible = False
-                        for el_no_res in no_results_elements: # Corrigido para iterar sobre a lista
-                            if await asyncio.to_thread(lambda: el_no_res.is_displayed): # Corrigido para usar lambda
+                        for el_no_res in no_results_elements:
+                            is_el_displayed_callable = lambda el=el_no_res: el.is_displayed # Captura el no lambda
+                            if await asyncio.to_thread(is_el_displayed_callable):
                                 is_no_results_visible = True; break
                         if is_no_results_visible:
                             scraper_logger.info(f"Página {page_num} indica 'Nenhum resultado' (visível após timeout de itens). Fim dos produtos.")
@@ -438,7 +430,7 @@ async def process_used_products_geral_async(
         for item_idx, item_element in enumerate(items_on_page):
             scraper_logger.debug(f"Processando item {item_idx + 1}/{len(items_on_page)} na página {page_num}.")
             try:
-                get_asin_callable = lambda: item_element.get_attribute('data-asin')
+                get_asin_callable = lambda: item_element.get_attribute('data-asin') # CORRIGIDO
                 asin = await asyncio.to_thread(get_asin_callable)
                 if not asin:
                     scraper_logger.debug("Item sem data-asin. Pulando.")
@@ -450,7 +442,7 @@ async def process_used_products_geral_async(
                     sponsored_els = await asyncio.to_thread(item_element.find_elements, By.XPATH, xpath_sponsored)
                     if sponsored_els:
                         for sp_el in sponsored_els:
-                            is_sp_el_displayed_callable = lambda: sp_el.is_displayed # CORRIGIDO
+                            is_sp_el_displayed_callable = lambda el=sp_el: el.is_displayed # CORRIGIDO
                             if await asyncio.to_thread(is_sp_el_displayed_callable):
                                 is_sponsored = True; break
                     if is_sponsored:
@@ -540,7 +532,7 @@ async def process_used_products_geral_async(
                 scraper_logger.warning(f"Item obsoleto (StaleElement) na página {page_num}. Pulando item.")
                 continue
             except Exception as e_item_proc:
-                scraper_logger.error(f"Erro ao processar item na pág {page_num}: {e_item_proc}", exc_info=True)
+                scraper_logger.error(f"Erro ao processar item na pág {page_num} (ASIN: {asin if 'asin' in locals() else 'N/A'}): {e_item_proc}", exc_info=True) # Adicionado ASIN ao log
                 continue
         
         scraper_logger.info(f"Página {page_num}: {current_page_products_processed} produtos 'usados' processados.")
@@ -548,14 +540,16 @@ async def process_used_products_geral_async(
         try:
             scraper_logger.debug(f"Verificando botão 'Próxima Página' (seletor: {SELETOR_PROXIMA_PAGINA})")
             next_page_el = await asyncio.to_thread(driver.find_element, By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA)
-            is_disabled_callable = lambda: 's-pagination-disabled' in (next_page_el.get_attribute('class') or "") # CORRIGIDO
-            is_disabled = await asyncio.to_thread(is_disabled_callable)
             
-            get_href_callable = lambda: next_page_el.get_attribute('href') # CORRIGIDO
+            get_class_callable = lambda: next_page_el.get_attribute('class') or ""
+            button_classes = await asyncio.to_thread(get_class_callable)
+            is_disabled = 's-pagination-disabled' in button_classes
+            
+            get_href_callable = lambda: next_page_el.get_attribute('href')
             has_href = await asyncio.to_thread(get_href_callable)
 
             if is_disabled or not has_href:
-                scraper_logger.info("Botão 'Próxima Página' desabilitado ou é o último. Fim da busca.")
+                scraper_logger.info(f"Botão 'Próxima Página' desabilitado ou sem href. Classes: '{button_classes}'. Fim da busca.")
                 break
             scraper_logger.info("Botão 'Próxima Página' encontrado. Indo para a próxima.")
         except NoSuchElementException:
