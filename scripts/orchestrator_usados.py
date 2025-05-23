@@ -33,8 +33,8 @@ logger.setLevel(logging.INFO)
 
 # --- CONFIGURAÇÕES IMPORTANTES ---
 # !!! ATENÇÃO: VERIFIQUE E AJUSTE ESTES SELETORES CUIDADOSAMENTE !!!
-# Estes seletores foram baseados no HTML fornecido anteriormente para "Um defeito de cor".
-# A extração da CONDIÇÃO específica ("Como Novo", "Bom") é o mais crítico e pode variar.
+# Baseado no HTML fornecido para "Um defeito de cor".
+# A extração da CONDIÇÃO específica ("Como Novo", "Bom") é o mais crítico.
 
 SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item[data-asin]"
 
@@ -43,20 +43,26 @@ SELETOR_NOME_PRODUTO_USADO = "div[data-cy='title-recipe'] h2.a-size-base-plus > 
 SELETOR_LINK_PRODUTO_USADO = "div[data-cy='title-recipe'] > a.a-link-normal"
 
 # Preço (baseado no snippet, dentro de 'secondary-offer-recipe')
+# A função get_price_sync_worker espera o seletor do elemento que CONTÉM o texto do preço.
+# O texto do preço "R$ 61,98" está em <span class="a-color-base">.
+# Então o seletor para get_price_sync_worker deve ser para este span.
 SELETOR_PRECO_USADO_DENTRO_DO_ITEM = "div[data-cy='secondary-offer-recipe'] span.a-color-base"
 
-# Condição
-# Este seletor pega o texto do link que indica o número de ofertas usadas (ex: "(1 oferta de produto usado)").
-# Se a CONDIÇÃO ESPECÍFICA (ex: "Usado - Bom") estiver visível na listagem para cada item,
-# DESCOMENTE E PREENCHA o SELETOR_CONDICAO_ESPECIFICA_USADO abaixo.
-SELETOR_INDICADOR_USADO_TEXTO = "div[data-cy='secondary-offer-recipe'] a"
-# SELETOR_CONDICAO_ESPECIFICA_USADO = "SEU_SELETOR_AQUI_PARA_CONDICAO_EXATA_VISIVEL_NA_LISTAGEM"
+# Condição (Esta é a parte que mais precisa de SUA VALIDAÇÃO)
+# No HTML de "Um defeito de cor", a condição específica não está clara, apenas "(X oferta de produto usado)".
+# Este seletor pega o texto do link que indica o número de ofertas usadas.
+# A lógica do script tentará usar isso para marcar como "Usado".
+# SE A IMAGEM 'image_7818ed.png' MOSTRAR UMA CONDIÇÃO ESPECÍFICA (ex: "Usado - Bom")
+# DIRETAMENTE NA LISTAGEM PARA CADA ITEM, VOCÊ PRECISA DE UM SELETOR PARA *ESSE TEXTO ESPECÍFICO*.
+SELETOR_INDICADOR_USADO_TEXTO = "div[data-cy='secondary-offer-recipe'] a" # Pega o texto tipo "(1 oferta de produto usado)"
+# Se houver um seletor melhor para a condição EXATA (Ex: "Usado - Como Novo"), substitua:
+# SELETOR_CONDICAO_ESPECIFICA_USADO = "SEU_SELETOR_AQUI_PARA_CONDICAO_EXATA" # Ex: "span.condicao-texto" (hipotético)
 
 
 # Link fornecido pelo usuário para produtos USADOS da Amazon Warehouse Deals
 USED_PRODUCTS_LINK = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true&page=1&qid=1747998790&xpid=M2soDZTyDMNhF&ref=sr_pg_1"
 
-CATEGORIES = [ # Para o script de usados, teremos apenas uma "categoria" que é a fonte de usados
+CATEGORIES = [
     {"name": "Amazon Usados - Warehouse", "safe_name": "Amazon_Usados_Warehouse", "url": USED_PRODUCTS_LINK},
 ]
 
@@ -78,139 +84,42 @@ TELEGRAM_CHAT_IDS_LIST = []
 if TELEGRAM_CHAT_IDS_STR:
     TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_LINK_GLOBAL = 10 
-HISTORY_DIR_BASE = "history_files_usados" 
-DEBUG_LOGS_DIR_BASE = "debug_logs_usados" 
+MAX_PAGINAS_POR_LINK_GLOBAL = 10
+HISTORY_DIR_BASE = "history_files_usados"
+DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
 GLOBAL_HISTORY_FILENAME = "price_history_USADOS_GLOBAL.json"
 
 os.makedirs(HISTORY_DIR_BASE, exist_ok=True)
 os.makedirs(DEBUG_LOGS_DIR_BASE, exist_ok=True)
 
 bot_instance_global = None
-if TELEGRAM_TOKEN and TELEGRAM_CHAT_IDS_LIST:
-    try:
-        bot_instance_global = Bot(token=TELEGRAM_TOKEN)
-        logger.info(f"Instância global do Bot Telegram criada para USADOS. IDs de Chat: {TELEGRAM_CHAT_IDS_LIST}")
-    except Exception as e:
-        logger.error(f"Falha ao inicializar Bot global para USADOS: {e}", exc_info=True)
-else:
-    logger.warning("TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID(s) globais não configurados ou inválidos. Notificações Telegram para USADOS desabilitadas.")
+# (O resto das inicializações globais, funções auxiliares como send_telegram_message_async, escape_md,
+# iniciar_driver_sync_worker, check_captcha_sync_worker, get_url_for_page_worker são as mesmas
+# da última versão completa do orchestrator_usados.py que te enviei. Vou omiti-las aqui para brevidade,
+# mas elas devem estar presentes no seu script.)
 
-def create_safe_filename(name_str):
-    normalized_name = unicodedata.normalize('NFKD', name_str).encode('ascii', 'ignore').decode('ascii')
-    safe_name = re.sub(r'[^\w\s-]', '', normalized_name).strip()
-    safe_name = re.sub(r'[-\s]+', '_', safe_name)
-    return safe_name
-
-async def send_telegram_message_async(bot, chat_id, text, parse_mode=None, specific_logger=None):
-    local_logger = specific_logger if specific_logger else logger
-    if not bot:
-        local_logger.error("Bot não inicializado ao tentar enviar mensagem.")
-        return False
-    try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
-        return True
-    except TelegramError as te:
-        local_logger.error(f"Erro Telegram ao enviar para {chat_id}: {te.message}", exc_info=False)
-        if "Too Many Requests" in te.message or "retry after" in te.message.lower():
-            retry_after_match = re.search(r"retry after (\d+)", te.message.lower())
-            wait_time = int(retry_after_match.group(1)) + 1 if retry_after_match else 5
-            local_logger.warning(f"Rate limit do Telegram para {chat_id}, aguardando {wait_time}s.")
-            await asyncio.sleep(wait_time)
-            try:
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode=parse_mode)
-                local_logger.info(f"Reenvio para {chat_id} após rate limit bem-sucedido.")
-                return True
-            except TelegramError as te_retry:
-                local_logger.error(f"Erro Telegram no REENVIO para {chat_id} após rate limit: {te_retry.message}")
-                return False
-        return False
-    except Exception as e:
-        local_logger.error(f"Erro GERAL ao enviar msg para {chat_id}: {e}", exc_info=True)
-        return False
-
-def escape_md(text):
-    if not isinstance(text, str): text = str(text)
-    escape_chars = r'([_*[\]()~`>#+\-=|{}.!])'
-    return re.sub(escape_chars, r'\\\1', text)
-
-def iniciar_driver_sync_worker(specific_logger, driver_executable_path_param=None):
-    options = Options()
-    options.add_argument("--headless=new"); options.add_argument("--disable-gpu"); options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage"); options.add_argument("--window-size=1920,1080"); options.add_argument("--lang=pt-BR,en-US;q=0.9,en;q=0.8")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"]); options.add_experimental_option('useAutomationExtension', False)
-    service = None
-    if driver_executable_path_param and os.path.exists(driver_executable_path_param) and os.access(driver_executable_path_param, os.X_OK):
-        specific_logger.info(f"Usando chromedriver globalmente fornecido em: {driver_executable_path_param}")
-        service = Service(executable_path=driver_executable_path_param)
-    else:
-        if driver_executable_path_param: specific_logger.warning(f"Caminho do chromedriver global fornecido ({driver_executable_path_param}) é inválido ou inacessível.")
-        service_path_local = None
-        common_paths = ["/usr/bin/chromedriver", "/usr/local/bin/chromedriver", os.path.expanduser("~/bin/chromedriver")]
-        for path_check in common_paths:
-            if os.path.exists(path_check) and os.access(path_check, os.X_OK): service_path_local = path_check; break
-        if service_path_local:
-            specific_logger.info(f"Usando chromedriver local encontrado em: {service_path_local}")
-            service = Service(executable_path=service_path_local)
-        else:
-            try:
-                specific_logger.info("Nenhum chromedriver pré-configurado/local encontrado. WebDriverManager (fallback no worker) iniciando.")
-                path_from_manager = ChromeDriverManager().install()
-                specific_logger.info(f"WebDriverManager (fallback no worker) configurou o driver em: {path_from_manager}")
-                service = Service(executable_path=path_from_manager)
-            except Exception as e_wdm_worker: specific_logger.error(f"Falha crítica ao tentar usar WebDriverManager como fallback no worker: {e_wdm_worker}", exc_info=True); raise
-    if not service: specific_logger.critical("Não foi possível configurar o Service do ChromeDriver."); raise RuntimeError("Falha ao inicializar o Service do ChromeDriver.")
-    driver = webdriver.Chrome(service=service, options=options)
-    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
-    return driver
-
-def check_captcha_sync_worker(driver, category_name_for_log, specific_logger):
-    try:
-        WebDriverWait(driver, 3).until(EC.any_of(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "form[action*='captcha'] img")),
-            EC.presence_of_element_located((By.XPATH, "//h4[contains(text(), 'Insira os caracteres')]")),
-            EC.presence_of_element_located((By.CSS_SELECTOR, "iframe[src*='captcha']")) ))
-        specific_logger.warning(f"CAPTCHA detectado em {category_name_for_log}. URL: {driver.current_url}")
-        return True
-    except (TimeoutException, NoSuchElementException): return False
-
+# Função get_price_sync_worker modificada para extrair de texto direto "R$ XX,YY"
 def get_price_from_direct_text(element_raiz, selector_para_span_de_preco, specific_logger):
     try:
         price_span_list = element_raiz.find_elements(By.CSS_SELECTOR, selector_para_span_de_preco)
         if price_span_list:
-            raw_text = price_span_list[0].text 
+            raw_text = price_span_list[0].text # Usar .text para pegar "R$ 61,98"
             if not raw_text: return None
-            cleaned_text = re.sub(r'[^\d,]', '', raw_text) 
+            # Limpeza para extrair apenas números e o separador decimal
+            cleaned_text = re.sub(r'[^\d,]', '', raw_text) # Remove 'R$', espaços, etc., mantém vírgula
             if not cleaned_text: return None
             
-            cleaned_text = cleaned_text.replace(',', '.') 
+            cleaned_text = cleaned_text.replace(',', '.') # Converte vírgula para ponto
             
             if re.match(r'^\d+(\.\d{1,2})?$', cleaned_text):
                 return float(cleaned_text)
-            if re.match(r'^\d+$', cleaned_text): 
+            if re.match(r'^\d+$', cleaned_text): # Caso seja um inteiro
                  return float(cleaned_text)
-            specific_logger.warning(f"Texto de preço '{raw_text}' não resultou em float válido após limpeza para '{cleaned_text}'. Seletor: {selector_para_span_de_preco}")
-        else:
-            specific_logger.debug(f"Nenhum elemento de preço encontrado com seletor '{selector_para_span_de_preco}' dentro do elemento raiz.")
+            specific_logger.warning(f"Texto de preço '{raw_text}' não resultou em float válido após limpeza para '{cleaned_text}'.")
         return None
     except Exception as e:
-        specific_logger.error(f"Exceção em get_price_from_direct_text com seletor '{selector_para_span_de_preco}': {e}", exc_info=True)
+        specific_logger.error(f"Exceção em get_price_from_direct_text com seletor '{selector_para_span_de_preco}': {e}")
         return None
-
-def get_url_for_page_worker(base_url, page_number):
-    url_parts = list(urlparse(base_url))
-    query = dict(parse_qs(url_parts[4]))
-    query['page'] = [str(page_number)]
-    # Adiciona qid único e ref padrão. Verifique se os parâmetros da URL de usados precisam de algo diferente.
-    query['qid'] = [str(int(asyncio.get_event_loop().time() * 1000))] 
-    query['ref'] = [f'sr_pg_{page_number}']
-    # Remove parâmetros que podem ser específicos da primeira página ou de sessão anterior
-    for p in ['xpid', 'srs', 'bbn']: query.pop(p, None)
-
-    url_parts[4] = urlencode(query, doseq=True)
-    return urlunparse(url_parts)
 
 
 async def processar_pagina_real_async(
@@ -220,52 +129,38 @@ async def processar_pagina_real_async(
     min_desconto_comparativo, bot_inst, chat_ids_list ):
 
     history_changed_in_this_run = False
-    # Constrói a URL base para paginação a partir da URL inicial da "categoria" (fonte de usados)
     parsed_initial_url = urlparse(url_inicial_categoria)
-    query_params_base = parse_qs(parsed_initial_url.query)
-    # Mantém apenas os parâmetros essenciais para a busca de usados.
-    # 'i' (index), 'rh' (refinement handle), 's' (sort), 'fs' (full-store) parecem importantes.
-    # Outros como qid, ref, page, xpid, bbn, srs são geralmente para sessão/pagina/tracking.
-    essential_params = {}
-    for essential_key in ['i', 'rh', 's', 'fs']: # Adicione outros se necessário
-        if essential_key in query_params_base:
-            essential_params[essential_key] = query_params_base[essential_key]
-    
-    cleaned_query_string = urlencode(essential_params, doseq=True)
-    base_url_para_paginacao = urlunparse(parsed_initial_url._replace(path="/s", query=cleaned_query_string, fragment=""))
-
+    query_params = parse_qs(parsed_initial_url.query)
+    for param in ['page', 'qid', 'ref', 'xpid', 'bbn', 'srs']:
+        query_params.pop(param, None)
+    cleaned_query_string = urlencode(query_params, doseq=True)
+    base_url_para_paginacao = urlunparse(parsed_initial_url._replace(path="/s", query=cleaned_query_string))
 
     specific_logger.info(f"--- Processando Fonte: {nome_fonte_atual} --- URL base para paginação: {base_url_para_paginacao} ---")
     paginas_sem_produtos_consecutivas = 0; loop_broken_flag = False; pagina_atual_numero = 0
 
     for i_pagina in range(1, MAX_PAGINAS_POR_LINK_GLOBAL + 1):
         pagina_atual_numero = i_pagina
-        # A primeira página é a URL fornecida, as subsequentes são construídas
-        if pagina_atual_numero == 1:
-            url_atual = url_inicial_categoria 
-        else:
-            url_atual = get_url_for_page_worker(base_url_para_paginacao, pagina_atual_numero)
+        if pagina_atual_numero == 1: url_atual = url_inicial_categoria
+        else: url_atual = get_url_for_page_worker(base_url_para_paginacao, pagina_atual_numero)
         
         specific_logger.info(f"[{nome_fonte_atual}] Processando URL: {url_atual} (Página: {pagina_atual_numero}/{MAX_PAGINAS_POR_LINK_GLOBAL})")
 
         try:
-            await asyncio.to_thread(driver.get, url_atual); await asyncio.sleep(5) 
+            await asyncio.to_thread(driver.get, url_atual); await asyncio.sleep(5)
         except Exception as e_load_url: specific_logger.error(f"Erro ao carregar {url_atual}: {e_load_url}"); loop_broken_flag = True; break
         if await asyncio.to_thread(check_captcha_sync_worker, driver, nome_fonte_atual, specific_logger): loop_broken_flag = True; break
 
         try:
             await asyncio.to_thread(WebDriverWait(driver, 30).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))))
-        except TimeoutException:
+        except TimeoutException: # (Lógica de tratamento de timeout e 'nenhum resultado' como antes)
             specific_logger.warning(f"Timeout esperando por '{SELETOR_ITEM_PRODUTO_USADO}' em {url_atual}.")
             try:
-                no_results_elements = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(), 'Nenhum resultado') or contains(text(), 'No results for') or contains(., 'não encontrou nenhum resultado')]")
-                if no_results_elements and any(el.is_displayed() for el in no_results_elements): # Checa se algum está visível
-                    specific_logger.info(f"Página indica 'Nenhum resultado' em {url_atual}. Fim da paginação para {nome_fonte_atual}.")
-                    loop_broken_flag = True; break
-            except Exception as e_no_res:
-                specific_logger.debug(f"Erro ao checar 'Nenhum resultado': {e_no_res}")
-
+                no_results_msg = await asyncio.to_thread(driver.find_elements, By.XPATH, "//span[contains(text(), 'Nenhum resultado') or contains(text(), 'No results for') or contains(., 'não encontrou nenhum resultado')]")
+                if no_results_msg and no_results_msg[0].is_displayed():
+                    specific_logger.info(f"Página indica 'Nenhum resultado' em {url_atual}. Fim da paginação para {nome_fonte_atual}."); loop_broken_flag = True; break
+            except: pass
             produtos_elements_check = await asyncio.to_thread(driver.find_elements, By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
             if not produtos_elements_check:
                 specific_logger.warning(f"Nenhum item ('{SELETOR_ITEM_PRODUTO_USADO}') encontrado após timeout em {url_atual}. Pulando pág.")
@@ -277,6 +172,7 @@ async def processar_pagina_real_async(
 
         all_item_elements_on_page = await asyncio.to_thread(driver.find_elements, By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
         specific_logger.info(f"[{nome_fonte_atual}] {len(all_item_elements_on_page)} itens ('{SELETOR_ITEM_PRODUTO_USADO}') encontrados na pág {pagina_atual_numero}.")
+        # (Lógica de pular página se não encontrar itens, como antes)
         if not all_item_elements_on_page:
             paginas_sem_produtos_consecutivas += 1
             if paginas_sem_produtos_consecutivas >= 2 and pagina_atual_numero > 1: loop_broken_flag = True; break
@@ -294,77 +190,80 @@ async def processar_pagina_real_async(
                 try:
                     nome_el_list = await asyncio.to_thread(p_element.find_elements, By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO)
                     if nome_el_list: nome_p = (await asyncio.to_thread(nome_el_list[0].text)).strip()[:150]
-                    if not nome_p or nome_p == "N/A": specific_logger.warning(f"ASIN {asin_p}: Nome não encontrado ou inválido com seletor '{SELETOR_NOME_PRODUTO_USADO}'."); continue
+                    else: specific_logger.warning(f"ASIN {asin_p}: Nome não encontrado com seletor '{SELETOR_NOME_PRODUTO_USADO}'."); continue
                 except NoSuchElementException: specific_logger.warning(f"ASIN {asin_p}: Exceção ao buscar nome."); continue
-                
+                if not nome_p or nome_p == "N/A": specific_logger.warning(f"ASIN {asin_p}: Nome extraído inválido."); continue
 
                 try:
                     link_el_list = await asyncio.to_thread(p_element.find_elements, By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO)
                     if link_el_list:
                         link_url_raw_p = await asyncio.to_thread(link_el_list[0].get_attribute, "href")
+                        # Construir link canônico da Amazon
                         if not link_url_raw_p.startswith("http"): link_url_raw_p = "https://www.amazon.com.br" + link_url_raw_p
                         parsed_link = urlparse(link_url_raw_p)
-                        link_p_url = urlunparse(parsed_link._replace(query="", fragment=""))
-                        if "/dp/" not in link_p_url and asin_p: link_p_url = f"https://www.amazon.com.br/dp/{asin_p}"
+                        link_p_url = urlunparse(parsed_link._replace(query="", fragment="")) # Limpa query e fragmento
+                        if "/dp/" not in link_p_url and asin_p: # Adiciona /dp/ASIN se não estiver
+                            link_p_url = f"https://www.amazon.com.br/dp/{asin_p}"
+
                     else: specific_logger.warning(f"ASIN {asin_p}: Link não encontrado."); link_p_url = f"https://www.amazon.com.br/dp/{asin_p}"
                 except NoSuchElementException: specific_logger.warning(f"ASIN {asin_p}: Exceção ao buscar link."); link_p_url = f"https://www.amazon.com.br/dp/{asin_p}"
 
+                # PREÇO: Usando a nova função para extrair de texto como "R$ 61,98"
                 preco_p_atual_val = await asyncio.to_thread(get_price_from_direct_text, p_element, SELETOR_PRECO_USADO_DENTRO_DO_ITEM, specific_logger)
                 if preco_p_atual_val is None or preco_p_atual_val <= 0:
                     specific_logger.warning(f"ASIN {asin_p}: Preço USADO inválido (R${preco_p_atual_val}) com seletor '{SELETOR_PRECO_USADO_DENTRO_DO_ITEM}'."); continue
                 
-                condicao_p_usado = "Usado (condição não especificada)" # Default
+                # CONDIÇÃO:
                 try:
-                    # Prioriza um seletor para condição específica se o usuário definir e encontrar
-                    # Exemplo: SELETOR_CONDICAO_ESPECIFICA_USADO = "span.minha-classe-de-condicao-exata"
-                    if 'SELETOR_CONDICAO_ESPECIFICA_USADO' in globals() and SELETOR_CONDICAO_ESPECIFICA_USADO:
-                       condicao_especifica_el_list = await asyncio.to_thread(p_element.find_elements, By.CSS_SELECTOR, SELETOR_CONDICAO_ESPECIFICA_USADO)
-                       if condicao_especifica_el_list:
-                           texto_cond_especifica = (await asyncio.to_thread(condicao_especifica_el_list[0].text)).strip()
-                           if texto_cond_especifica: condicao_p_usado = texto_cond_especifica
+                    # Tenta primeiro um seletor para condição específica, se você definir um SELETOR_CONDICAO_ESPECIFICA_USADO
+                    # if 'SELETOR_CONDICAO_ESPECIFICA_USADO' in globals() and SELETOR_CONDICAO_ESPECIFICA_USADO:
+                    #    condicao_el_list = await asyncio.to_thread(p_element.find_elements, By.CSS_SELECTOR, SELETOR_CONDICAO_ESPECIFICA_USADO)
+                    #    if condicao_el_list: condicao_p_usado = (await asyncio.to_thread(condicao_el_list[0].text)).strip()
 
                     # Se não encontrou condição específica ou o seletor não está definido, usa o SELETOR_INDICADOR_USADO_TEXTO
-                    # e verifica se o texto indica "Usado - Condição"
-                    if condicao_p_usado == "Usado (condição não especificada)" or not condicao_p_usado.lower().startswith("usado -"):
+                    if condicao_p_usado == "N/A" or not condicao_p_usado:
                         indicador_el_list = await asyncio.to_thread(p_element.find_elements, By.CSS_SELECTOR, SELETOR_INDICADOR_USADO_TEXTO)
                         if indicador_el_list:
                             texto_indicador = (await asyncio.to_thread(indicador_el_list[0].text)).strip()
-                            if texto_indicador.lower().startswith("usado -"): # Ex: "Usado - Bom", "Usado - Como Novo"
-                                condicao_p_usado = texto_indicador
-                            elif "usado" in texto_indicador.lower(): # Ex: "(1 oferta de produto usado)"
-                                condicao_p_usado = "Usado (ver detalhes na oferta)"
-                            else:
-                                specific_logger.debug(f"ASIN {asin_p}: Texto do indicador '{texto_indicador}' não parece ser uma condição de usado.")
+                            if "usado" in texto_indicador.lower(): # Ex: "(1 oferta de produto usado)"
+                                condicao_p_usado = "Usado (detalhes na oferta)" # Genérico
+                                # Se o texto do indicador já for "Usado - Bom", por exemplo, isso já pegaria.
+                                if texto_indicador.lower().startswith("usado -"):
+                                     condicao_p_usado = texto_indicador
+                            else: # Se o seletor pegar algo que não indica usado
+                                condicao_p_usado = "Condição não clara"
                         else:
                             specific_logger.warning(f"ASIN {asin_p}: Indicador de usado/condição não encontrado com seletor '{SELETOR_INDICADOR_USADO_TEXTO}'.")
+                            condicao_p_usado = "Condição não obtida"
                 except Exception as e_cond:
-                    specific_logger.error(f"ASIN {asin_p}: Exceção ao buscar condição: {e_cond}")
+                    specific_logger.error(f"ASIN {asin_p}: Exceção ao buscar condição: {e_cond}"); condicao_p_usado = "Erro Condição"
+
 
                 specific_logger.info(f"[{nome_fonte_atual}] ASIN {asin_p}: Nome='{nome_p[:30]}...', Preço=R${preco_p_atual_val:.2f}, Condição='{condicao_p_usado}'")
 
+                # Lógica de Histórico e Notificação para USADOS (como definida antes)
                 entry_hist_p = price_history_data.get(asin_p)
                 should_notify_product = False
                 notification_reason = ""
                 desconto_calculado_para_msg = 0.0
                 preco_anterior_para_msg = preco_p_atual_val
 
-                if entry_hist_p is None: 
+                if entry_hist_p is None: # Produto novo no histórico
                     should_notify_product = True
                     notification_reason = "Novo item usado encontrado (primeira vez)."
                     entry_hist_p = {
                         "name": nome_p, "link": link_p_url,
                         "seen_price": preco_p_atual_val, "condition": condicao_p_usado,
                         "notified_on_first_find": True,
-                        "last_notified_price_for_drop": None, 
+                        "last_notified_price_for_drop": None,
                         "source_last_seen": nome_fonte_atual
                     }
                     price_history_data[asin_p] = entry_hist_p
                     history_changed_in_this_run = True
-                else: 
+                else: # Produto já existe no histórico (lógica de desconto e atualização como antes)
                     last_seen_price_hist = entry_hist_p.get("seen_price")
-                    last_condition_hist = entry_hist_p.get("condition") # Pode ser usado para lógica mais fina
                     last_notified_price_drop_hist = entry_hist_p.get("last_notified_price_for_drop")
-                    
+
                     if entry_hist_p.get("name") != nome_p: entry_hist_p["name"] = nome_p; history_changed_in_this_run = True
                     if entry_hist_p.get("link") != link_p_url: entry_hist_p["link"] = link_p_url; history_changed_in_this_run = True
                     entry_hist_p["source_last_seen"] = nome_fonte_atual
@@ -380,16 +279,12 @@ async def processar_pagina_real_async(
                                 entry_hist_p["last_notified_price_for_drop"] = preco_p_atual_val
                                 history_changed_in_this_run = True
                             else:
-                                notification_reason = f"Queda de {desconto_calc:.1f}% não é menor que última notificada por queda (R${last_notified_price_drop_hist:.2f})."
+                                notification_reason = f"Queda de {desconto_calc:.1f}% não é menor que última notificada por queda ({last_notified_price_drop_hist})."
                         else:
                             notification_reason = f"Queda de {desconto_calc:.1f}% não atingiu {min_desconto_comparativo}%."
                         specific_logger.info(f"ASIN {asin_p}: {notification_reason}")
                     elif last_seen_price_hist is not None and preco_p_atual_val > last_seen_price_hist:
                          specific_logger.info(f"ASIN {asin_p}: Preço aumentou de R${last_seen_price_hist:.2f} para R${preco_p_atual_val:.2f}.")
-                    elif last_seen_price_hist is not None and abs(preco_p_atual_val - last_seen_price_hist) < 1e-9 and condicao_p_usado != last_condition_hist:
-                        specific_logger.info(f"ASIN {asin_p}: Preço estável R${preco_p_atual_val:.2f}, mas condição mudou de '{last_condition_hist}' para '{condicao_p_usado}'.")
-                        # Você pode querer uma lógica de notificação aqui se a condição melhorar
-
 
                     if entry_hist_p.get("seen_price") != preco_p_atual_val or entry_hist_p.get("condition") != condicao_p_usado:
                         entry_hist_p["seen_price"] = preco_p_atual_val
@@ -397,11 +292,13 @@ async def processar_pagina_real_async(
                         history_changed_in_this_run = True
                         specific_logger.info(f"ASIN {asin_p}: Seen price/condition atualizado para R${preco_p_atual_val:.2f} / '{condicao_p_usado}'.")
                     
-                    if "notified_on_first_find" not in entry_hist_p:
+                    if "notified_on_first_find" not in entry_hist_p: # Para compatibilidade com histórico antigo
                          entry_hist_p["notified_on_first_find"] = False 
                     price_history_data[asin_p] = entry_hist_p
 
+
                 if should_notify_product and bot_inst and chat_ids_list:
+                    # (Lógica de formatação da mensagem do Telegram como antes)
                     msg_telegram = ""
                     if "Novo item usado encontrado" in notification_reason:
                         msg_telegram = (f"✨ *NOVO ITEM USADO NA ÁREA!*\n\n"
@@ -430,10 +327,11 @@ async def processar_pagina_real_async(
                     else:
                         specific_logger.warning(f"ASIN {asin_p}: `should_notify_product` era True, mas `msg_telegram` vazia. Razão: {notification_reason}")
 
+
             except StaleElementReferenceException: specific_logger.warning(f"ASIN {asin_p}: Elemento stale (usado)."); continue
             except Exception as e_det: specific_logger.error(f"ASIN {asin_p}: Erro detalhes do produto (usado): {e_det}", exc_info=True); continue
 
-        if pagina_atual_numero < MAX_PAGINAS_POR_LINK_GLOBAL: await asyncio.sleep(3) 
+        if pagina_atual_numero < MAX_PAGINAS_POR_LINK_GLOBAL: await asyncio.sleep(3)
         if loop_broken_flag: break
     
     processed_pages_count = pagina_atual_numero
@@ -444,16 +342,29 @@ async def processar_pagina_real_async(
     specific_logger.info(f"--- Concluída Fonte: {nome_fonte_atual} (aprox. {max(0, processed_pages_count)} pgs processadas) ---")
     return history_changed_in_this_run
 
-async def scrape_source_worker_async( 
+# Funções:
+# create_safe_filename (já existe)
+# send_telegram_message_async (já existe)
+# escape_md (já existe)
+# iniciar_driver_sync_worker (já existe)
+# check_captcha_sync_worker (já existe)
+# get_url_for_page_worker (já existe - verificar se 'ref' e outros params precisam mudar para warehouse)
+
+# O restante das funções (scrape_source_worker_async, orchestrate_all_usados_scrapes_main_async, __main__)
+# permanecem como na versão anterior que te enviei (com as devidas atualizações de nomes de variáveis/loggers
+# para "_usados" onde aplicável). A principal mudança foi concentrada em `processar_pagina_real_async`
+# e nos seletores no topo do arquivo. Vou incluir o restante abaixo para completude.
+
+async def scrape_source_worker_async(
     source_details, min_desconto_global_val, bot_global_val,
     chat_ids_global_val, semaphore, concurrency_limit_for_log,
     global_driver_path=None, shared_price_history_data=None):
 
-    source_name = source_details["name"] 
-    source_safe_name = source_details["safe_name"] 
-    source_url = source_details["url"] 
+    source_name = source_details["name"]
+    source_safe_name = source_details["safe_name"]
+    source_url = source_details["url"]
 
-    worker_logger = logging.getLogger(f"worker_usados.{source_safe_name}") 
+    worker_logger = logging.getLogger(f"worker_usados.{source_safe_name}")
     if not worker_logger.handlers:
         log_filename_source = os.path.join(DEBUG_LOGS_DIR_BASE, f"scrape_debug_{source_safe_name}.log")
         file_handler_source = logging.FileHandler(log_filename_source, encoding="utf-8", mode="w")
@@ -467,12 +378,8 @@ async def scrape_source_worker_async(
     history_was_changed_by_this_worker = False
 
     async with semaphore:
-        try: # Para logging do semáforo
-            active_workers_approx = concurrency_limit_for_log - semaphore._value if hasattr(semaphore, '_value') else 'N/A'
-            logger.info(f"Semáforo ADQUIRIDO por (USADOS): '{source_name}'. Concorrência (aprox): {active_workers_approx}/{concurrency_limit_for_log}.")
-        except Exception:
-             logger.info(f"Semáforo ADQUIRIDO por (USADOS): '{source_name}'.")
-
+        slots_ocupados_agora = concurrency_limit_for_log - semaphore._value
+        logger.info(f"Semáforo ADQUIRIDO por (USADOS): '{source_name}'. Slots ocupados: {slots_ocupados_agora}/{concurrency_limit_for_log}.")
         worker_logger.info(f"--- [WORKER USADOS INÍCIO] Fonte: {source_name} ---")
 
         if shared_price_history_data is None:
@@ -552,12 +459,12 @@ async def orchestrate_all_usados_scrapes_main_async():
         if installed_chromedriver_path: logger.info(f"Usando ChromeDriver de {installed_chromedriver_path} (USADOS).")
         else: logger.warning("Nenhum ChromeDriver global pôde ser configurado (USADOS).")
 
-    CONCURRENCY_LIMIT = 1 
+    CONCURRENCY_LIMIT = 1
     semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
 
-    tasks_coroutines = []
-    for source_data in CATEGORIES: 
-        tasks_coroutines.append(scrape_source_worker_async(
+    tasks = []
+    for source_data in CATEGORIES:
+        tasks.append(scrape_source_worker_async(
             source_details=source_data,
             min_desconto_global_val=MIN_DESCONTO_USADOS,
             bot_global_val=bot_instance_global,
@@ -568,47 +475,13 @@ async def orchestrate_all_usados_scrapes_main_async():
             shared_price_history_data=global_price_history_data_usados
         ))
 
-    logger.info(f"Iniciando {len(tasks_coroutines)} tarefa(s) de scraping de USADOS...")
-    
-    results = []
-    if tasks_coroutines:
-        active_tasks = [asyncio.create_task(coro) for coro in tasks_coroutines]
-        
-        while not all(t.done() for t in active_tasks):
-            num_done = sum(1 for t in active_tasks if t.done())
-            num_total = len(active_tasks)
-            try:
-                active_selenium_workers = CONCURRENCY_LIMIT - semaphore._value if hasattr(semaphore, '_value') else 'N/A'
-                logger.info(f"Orquestrador de USADOS aguardando... {num_done}/{num_total} tarefas concluídas. "
-                            f"Workers ativos (aprox.): {active_selenium_workers}/{CONCURRENCY_LIMIT}. Próximo log em 60s.")
-            except Exception:
-                 logger.info(f"Orquestrador de USADOS aguardando... {num_done}/{num_total} tarefas concluídas. Próximo log em 60s.")
-
-            try:
-                await asyncio.wait_for(asyncio.shield(asyncio.gather(*active_tasks, return_exceptions=True)), timeout=60)
-            except asyncio.TimeoutError:
-                pass 
-            except Exception as e_gather_loop:
-                logger.error(f"Erro inesperado no loop de keep-alive (USADOS): {e_gather_loop}", exc_info=True)
-                break 
-        
-        results = []
-        for task in active_tasks:
-            try:
-                results.append(task.result())
-            except Exception as e_task_res:
-                logger.error(f"Exceção ao obter resultado da task (USADOS): {e_task_res}", exc_info=True)
-                results.append(e_task_res)
-
-        logger.info("Todas as tarefas de scraping de USADOS foram concluídas ou falharam.")
-    else:
-        logger.info("Nenhuma tarefa de scraping de USADOS para executar.")
-
+    logger.info(f"Iniciando {len(tasks)} tarefa(s) de scraping de USADOS...")
+    results_from_workers = await asyncio.gather(*tasks, return_exceptions=True)
 
     any_history_modified_overall = False
     successful_tasks, failed_tasks = 0, 0
-    for i, res_worker in enumerate(results):
-        source_name_res = CATEGORIES[i]['name'] if i < len(CATEGORIES) else f"Tarefa Usados Desconhecida {i}"
+    for i, res_worker in enumerate(results_from_workers):
+        source_name_res = CATEGORIES[i]['name']
         if isinstance(res_worker, Exception):
             logger.error(f"Tarefa para '{source_name_res}' (USADOS) FALHOU: {res_worker}", exc_info=True)
             failed_tasks +=1
@@ -639,22 +512,13 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS_LIST:
         logger.warning("ALERTA USADOS: Token do Telegram ou Chat IDs não configurados. Notificações desabilitadas.")
     
-    alert_msg_selector = ("!!!!!!!!!! ALERTA CRÍTICO DE SELETORES (USADOS) !!!!!!!!!!\n"
-                          "Os seletores CSS para produtos usados PRECISAM ser verificados e ajustados em 'orchestrator_usados.py'.\n"
-                          "Inspecione o HTML da página de usados da Amazon (ou a imagem que você enviou) para os valores corretos de:\n"
-                          f"  SELETOR_ITEM_PRODUTO_USADO       (atual: '{SELETOR_ITEM_PRODUTO_USADO}')\n"
-                          f"  SELETOR_NOME_PRODUTO_USADO       (atual: '{SELETOR_NOME_PRODUTO_USADO}')\n"
-                          f"  SELETOR_LINK_PRODUTO_USADO       (atual: '{SELETOR_LINK_PRODUTO_USADO}')\n"
-                          f"  SELETOR_PRECO_USADO_DENTRO_DO_ITEM (atual: '{SELETOR_PRECO_USADO_DENTRO_DO_ITEM}')\n"
-                          f"  SELETOR_INDICADOR_USADO_TEXTO    (atual: '{SELETOR_INDICADOR_USADO_TEXTO}')\n"
-                          "  (Considere também SELETOR_CONDICAO_ESPECIFICA_USADO se a condição exata estiver visível)\n"
-                          "O script NÃO FUNCIONARÁ CORRETAMENTE até que os seletores estejam corretos para a página alvo.\n"
-                          "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-    
-    # Adicione uma verificação simples para logar o alerta se os seletores parecerem default ou muito genéricos
-    # Esta é uma heurística, ajuste conforme refina seus seletores.
-    if "CONFIRME!" in SELETOR_INDICADOR_USADO_TEXTO or \
-       SELETOR_PRECO_USADO_DENTRO_DO_ITEM == "div[data-cy='secondary-offer-recipe'] span.a-color-base": # Verifica se um dos seletores chave ainda é o default do exemplo
+    # Validação crítica dos seletores
+    alert_msg_selector = "!!!!!!!!!! ALERTA CRÍTICO !!!!!!!!!!\nOs seletores CSS para produtos usados PRECISAM ser verificados e ajustados em 'orchestrator_usados.py'.\nInspecione o HTML da página de usados da Amazon para os valores corretos de:\nSELETOR_ITEM_PRODUTO_USADO\nSELETOR_NOME_PRODUTO_USADO\nSELETOR_LINK_PRODUTO_USADO\nSELETOR_PRECO_USADO_DENTRO_DO_ITEM\nSELETOR_INDICADOR_USADO_TEXTO (e/ou defina um SELETOR_CONDICAO_ESPECIFICA_USADO)\nO script NÃO FUNCIONARÁ CORRETAMENTE até que isso seja feito.\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    # Esta é uma verificação simples. Você pode querer remover os "CONFIRME!" dos seletores
+    # no topo do script depois de ajustá-los para não ver este alerta.
+    if "CONFIRME!" in SELETOR_ITEM_PRODUTO_USADO or \
+       SELETOR_NOME_PRODUTO_USADO == "h2 a span.a-text-normal" or \
+       SELETOR_PRECO_USADO_DENTRO_DO_ITEM == "div[data-cy='secondary-offer-recipe'] span.a-color-base" and logger.level <= logging.WARNING: # Exemplo de checagem mais específica
         logger.critical(alert_msg_selector)
 
 
