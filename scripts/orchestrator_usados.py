@@ -32,34 +32,13 @@ logger.propagate = False
 logger.setLevel(logging.INFO)
 
 # --- CONFIGURAÇÕES IMPORTANTES ---
-# !!! ATENÇÃO: VERIFIQUE E AJUSTE ESTES SELETORES CUIDADOSAMENTE !!!
-# Baseado no HTML fornecido para "Um defeito de cor".
-# A extração da CONDIÇÃO específica ("Como Novo", "Bom") é o mais crítico.
 
 SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item[data-asin]"
+SELETOR_NOME_PRODUTO_USADO = "span.a-size-medium.a-color-base.a-text-normal"
+SELETOR_LINK_PRODUTO_USADO = "a.a-link-normal.s-no-outline"
+SELETOR_PRECO_USADO_DENTRO_DO_ITEM = "span.a-offscreen"
+SELETOR_INDICADOR_USADO_TEXTO = "span"
 
-# Nome e Link (baseado no snippet HTML fornecido)
-SELETOR_NOME_PRODUTO_USADO = "div[data-cy='title-recipe'] h2.a-size-base-plus > span"
-SELETOR_LINK_PRODUTO_USADO = "div[data-cy='title-recipe'] > a.a-link-normal"
-
-# Preço (baseado no snippet, dentro de 'secondary-offer-recipe')
-# A função get_price_sync_worker espera o seletor do elemento que CONTÉM o texto do preço.
-# O texto do preço "R$ 61,98" está em <span class="a-color-base">.
-# Então o seletor para get_price_sync_worker deve ser para este span.
-SELETOR_PRECO_USADO_DENTRO_DO_ITEM = "div[data-cy='secondary-offer-recipe'] span.a-color-base"
-
-# Condição (Esta é a parte que mais precisa de SUA VALIDAÇÃO)
-# No HTML de "Um defeito de cor", a condição específica não está clara, apenas "(X oferta de produto usado)".
-# Este seletor pega o texto do link que indica o número de ofertas usadas.
-# A lógica do script tentará usar isso para marcar como "Usado".
-# SE A IMAGEM 'image_7818ed.png' MOSTRAR UMA CONDIÇÃO ESPECÍFICA (ex: "Usado - Bom")
-# DIRETAMENTE NA LISTAGEM PARA CADA ITEM, VOCÊ PRECISA DE UM SELETOR PARA *ESSE TEXTO ESPECÍFICO*.
-SELETOR_INDICADOR_USADO_TEXTO = "div[data-cy='secondary-offer-recipe'] a" # Pega o texto tipo "(1 oferta de produto usado)"
-# Se houver um seletor melhor para a condição EXATA (Ex: "Usado - Como Novo"), substitua:
-# SELETOR_CONDICAO_ESPECIFICA_USADO = "SEU_SELETOR_AQUI_PARA_CONDICAO_EXATA" # Ex: "span.condicao-texto" (hipotético)
-
-
-# Link fornecido pelo usuário para produtos USADOS da Amazon Warehouse Deals
 USED_PRODUCTS_LINK = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true&page=1&qid=1747998790&xpid=M2soDZTyDMNhF&ref=sr_pg_1"
 
 CATEGORIES = [
