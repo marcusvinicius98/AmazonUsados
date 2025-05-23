@@ -3,6 +3,7 @@ import re
 import logging
 import asyncio
 import json
+import time
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 
@@ -73,12 +74,14 @@ os.makedirs(DEBUG_LOGS_DIR_BASE, exist_ok=True)
 
 def iniciar_driver_sync_worker(logger, driver_path=None):
     chrome_options = Options()
-    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--headless=new")  # Novo headless para melhor compatibilidade
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--window-size=1920x1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.7049.114 Safari/537.36")
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Evita detecção de bot
+    chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
 
     if driver_path:
         service = Service(driver_path)
@@ -86,6 +89,7 @@ def iniciar_driver_sync_worker(logger, driver_path=None):
         service = Service(ChromeDriverManager().install())
 
     driver = webdriver.Chrome(service=service, options=chrome_options)
+    driver.set_page_load_timeout(30)  # Timeout de 30 segundos para carregamento da página
     return driver
 
 async def send_telegram_message_async(bot, chat_id, message, parse_mode, logger):
@@ -144,6 +148,17 @@ def check_captcha_sync_worker(driver, logger):
     except NoSuchElementException:
         return False
 
+def wait_for_page_load(driver, logger):
+    try:
+        WebDriverWait(driver, 30).until(
+            lambda d: d.execute_script("return document.readyState") == "complete"
+        )
+        logger.info("Página carregada completamente.")
+        return True
+    except TimeoutException:
+        logger.error("Timeout ao esperar o carregamento completo da página.")
+        return False
+
 async def process_category(driver, category, history):
     url = category['url']
     logger.info(f"Processando categoria: {category['name']}, URL: {url}")
@@ -152,88 +167,107 @@ async def process_category(driver, category, history):
     for page in range(1, MAX_PAGINAS_POR_LINK_GLOBAL + 1):
         page_url = get_url_for_page_worker(url, page)
         logger.info(f"Acessando página {page}: {page_url}")
-        driver.get(page_url)
-
-        if check_captcha_sync_worker(driver, logger):
-            logger.error("Interrompendo devido a captcha.")
-            break
-
-        try:
-            WebDriverWait(driver, 15).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))
-            )
-            items = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
-            logger.info(f"Página {page}: Encontrados {len(items)} itens.")
-
-            for item in items:
-                try:
-                    # Verificar se é um produto usado
-                    try:
-                        indicador_usado = item.find_element(By.CSS_SELECTOR, SELETOR_INDICADOR_USADO).text
-                        if "usado" not in indicador_usado.lower():
-                            continue
-                    except NoSuchElementException:
-                        continue
-
-                    nome = item.find_element(By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO).text
-                    link = item.find_element(By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO).get_attribute('href')
-                    preco = get_price_from_element(item, logger)
-
-                    if not preco:
-                        logger.warning(f"Preço não encontrado para o produto: {nome}")
-                        continue
-
-                    asin = item.get_attribute('data-asin')
-                    if not asin:
-                        logger.warning(f"ASIN não encontrado para o produto: {nome}")
-                        continue
-
-                    # Gerenciar histórico
-                    if USAR_HISTORICO:
-                        if asin not in history:
-                            history[asin] = {'nome': nome, 'precos': [], 'link': link}
-                        last_price = history[asin]['precos'][-1]['preco'] if history[asin]['precos'] else None
-                        if last_price and preco >= last_price:
-                            continue  # Não notificar se o preço não diminuiu
-                        history[asin]['precos'].append({
-                            'preco': preco,
-                            'data': datetime.now().isoformat()
-                        })
-                        save_history(history)
-
-                    # Enviar notificação
-                    if bot:
-                        desconto_msg = f"Desconto: {((last_price - preco) / last_price * 100):.2f}%" if last_price else "Novo produto"
-                        message = (
-                            f"*Produto Usado*: {escape_md(nome)}\n"
-                            f"*Preço*: R${preco:.2f}\n"
-                            f"*Desconto*: {desconto_msg}\n"
-                            f"*Link*: {link}"
-                        )
-                        for chat_id in TELEGRAM_CHAT_IDS_LIST:
-                            await send_telegram_message_async(bot, chat_id, message, ParseMode.MARKDOWN, logger)
-
-                    logger.info(f"Produto: {nome}, Preço: R${preco:.2f}, Link: {link}")
-
-                except StaleElementReferenceException:
-                    logger.warning("Elemento obsoleto encontrado, continuando...")
-                    continue
-                except Exception as e:
-                    logger.error(f"Erro ao processar item: {e}")
-                    continue
-
-            # Verificar se há próxima página
+        
+        for attempt in range(3):  # Tentar até 3 vezes em caso de falha
             try:
-                next_page = driver.find_element(By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA)
-                if 'disabled' in next_page.get_attribute('class'):
-                    logger.info("Última página alcançada.")
-                    break
-            except NoSuchElementException:
-                logger.info("Botão de próxima página não encontrado. Finalizando.")
-                break
+                driver.get(page_url)
+                if not wait_for_page_load(driver, logger):
+                    logger.warning(f"Tentativa {attempt + 1} falhou: página não carregou completamente.")
+                    time.sleep(2)  # Delay para evitar bloqueios
+                    continue
 
-        except TimeoutException:
-            logger.warning(f"Timeout ao carregar página {page}.")
+                if check_captcha_sync_worker(driver, logger):
+                    logger.error(f"Captcha detectado na página {page}. Tentando novamente após delay.")
+                    time.sleep(5)  # Delay maior para captcha
+                    continue
+
+                WebDriverWait(driver, 30).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))
+                )
+                items = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
+                logger.info(f"Página {page}: Encontrados {len(items)} itens.")
+
+                for item in items:
+                    try:
+                        # Verificar se é um produto usado
+                        try:
+                            indicador_usado = item.find_element(By.CSS_SELECTOR, SELETOR_INDICADOR_USADO).text
+                            if "usado" not in indicador_usado.lower():
+                                continue
+                        except NoSuchElementException:
+                            continue
+
+                        nome = item.find_element(By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO).text
+                        link = item.find_element(By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO).get_attribute('href')
+                        preco = get_price_from_element(item, logger)
+
+                        if not preco:
+                            logger.warning(f"Preço não encontrado para o produto: {nome}")
+                            continue
+
+                        asin = item.get_attribute('data-asin')
+                        if not asin:
+                            logger.warning(f"ASIN não encontrado para o produto: {nome}")
+                            continue
+
+                        # Gerenciar histórico
+                        if USAR_HISTORICO:
+                            if asin not in history:
+                                history[asin] = {'nome': nome, 'precos': [], 'link': link}
+                            last_price = history[asin]['precos'][-1]['preco'] if history[asin]['precos'] else None
+                            if last_price and preco >= last_price:
+                                continue  # Não notificar se o preço não diminuiu
+                            history[asin]['precos'].append({
+                                'preco': preco,
+                                'data': datetime.now().isoformat()
+                            })
+                            save_history(history)
+
+                        # Enviar notificação
+                        if bot:
+                            desconto_msg = f"Desconto: {((last_price - preco) / last_price * 100):.2f}%" if last_price else "Novo produto"
+                            message = (
+                                f"*Produto Usado*: {escape_md(nome)}\n"
+                                f"*Preço*: R${preco:.2f}\n"
+                                f"*Desconto*: {desconto_msg}\n"
+                                f"*Link*: {link}"
+                            )
+                            for chat_id in TELEGRAM_CHAT_IDS_LIST:
+                                await send_telegram_message_async(bot, chat_id, message, ParseMode.MARKDOWN, logger)
+
+                        logger.info(f"Produto: {nome}, Preço: R${preco:.2f}, Link: {link}")
+
+                    except StaleElementReferenceException:
+                        logger.warning("Elemento obsoleto encontrado, continuando...")
+                        continue
+                    except Exception as e:
+                        logger.error(f"Erro ao processar item: {e}")
+                        continue
+
+                # Verificar se há próxima página
+                try:
+                    next_page = driver.find_element(By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA)
+                    if 'disabled' in next_page.get_attribute('class'):
+                        logger.info("Última página alcançada.")
+                        break
+                except NoSuchElementException:
+                    logger.info("Botão de próxima página não encontrado. Finalizando.")
+                    break
+
+                time.sleep(2)  # Delay entre páginas para evitar bloqueios
+                break  # Sucesso na tentativa, sair do loop de tentativas
+
+            except TimeoutException:
+                logger.warning(f"Timeout ao carregar página {page} na tentativa {attempt + 1}.")
+                time.sleep(2)
+                continue
+            except Exception as e:
+                logger.error(f"Erro inesperado na página {page}: {e}")
+                time.sleep(2)
+                continue
+
+        else:
+            logger.error(f"Falha após 3 tentativas para a página {page}. Abortando.")
             break
 
 async def orchestrate_all_usados_scrapes_main_async():
