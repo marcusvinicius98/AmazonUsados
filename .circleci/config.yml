@@ -12,6 +12,9 @@ jobs:
   executar_scraper_usados: # Nome do job atualizado
     docker:
       - image: cimg/python:3.11-browsers
+    
+    no_output_timeout: 30m # <--- ADICIONADO AQUI, com a mesma indentação de 'docker', 'environment' e 'steps'
+    
     environment:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
