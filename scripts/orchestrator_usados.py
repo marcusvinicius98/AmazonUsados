@@ -104,7 +104,10 @@ def test_proxy(proxy_url, logger):
             logger.warning(f"Proxy retornou status inesperado: {response.status_code}")
             return False
     except requests.RequestException as e:
-        logger.error(f"Erro ao testar proxy: {e}")
+        if "NameResolutionError" in str(e):
+            logger.error(f"Erro de resolução de nome para o proxy: {e}")
+        else:
+            logger.error(f"Erro ao testar proxy: {e}")
         return False
 
 def iniciar_driver_sync_worker(current_run_logger, driver_path=None):
@@ -414,6 +417,11 @@ def check_url_status(url, logger, max_retries=5, backoff_factor=3):
             proxy_url = f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
         proxies = {"http": proxy_url, "https": proxy_url}
         logger.debug(f"Usando proxy para verificação de status: {proxy_url.replace(':password@', ':****@') if ':password@' in proxy_url else proxy_url}")
+        if not test_proxy(proxy_url, logger):
+            logger.warning("Proxy inválido detectado em check_url_status. Prosseguindo sem proxy.")
+            proxies = None
+    else:
+        logger.warning("PROXY_HOST ou PROXY_PORT não configurados. Verificando URL sem proxy.")
 
     for attempt in range(1, max_retries + 1):
         try:
