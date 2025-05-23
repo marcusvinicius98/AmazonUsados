@@ -1,27 +1,11 @@
-version: 2.1
-
-parameters:
-  min_desconto_usados: # Renomeado para clareza
-    type: string
-    default: "40" # Seu limite de 40%
-  usar_historico_usados: # Renomeado para clareza
-    type: boolean
-    default: true
-
 jobs:
-  executar_scraper_usados: # Nome do job atualizado
+  executar_scraper_usados:
     docker:
       - image: cimg/python:3.11-browsers
-    
-    no_output_timeout: 30m # <--- ADICIONADO AQUI, com a mesma indentação de 'docker', 'environment' e 'steps'
-    
     environment:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
       USAR_HISTORICO_GLOBAL_USADOS: << pipeline.parameters.usar_historico_usados >>
-      # Defina seus tokens e IDs de chat como variáveis de ambiente no CircleCI
-      # TELEGRAM_TOKEN: "SEU_TOKEN_AQUI"
-      # TELEGRAM_CHAT_ID: "SEU_CHAT_ID_AQUI"
     steps:
       - checkout
       - run:
@@ -36,7 +20,8 @@ jobs:
             - v1-usados-historico-cache-
       - run:
           name: Executar Script Orquestrador de Scraping de USADOS
-          command: python scripts/orchestrator_usados.py # Novo nome do script
+          no_output_timeout: 30m  # ✅ Correto aqui!
+          command: python scripts/orchestrator_usados.py
       - run:
           name: Verificar arquivos gerados nos diretórios de output (USADOS)
           command: |
@@ -51,7 +36,7 @@ jobs:
           name: Salvar histórico de preços de USADOS
           key: v1-usados-historico-cache-{{ .Branch }}-{{ epoch }}
           paths:
-            - "history_files_usados" # Novo diretório de histórico
+            - "history_files_usados"
       - store_artifacts:
           name: Armazenar histórico de preços de USADOS
           path: "history_files_usados"
@@ -62,8 +47,3 @@ jobs:
           path: "debug_logs_usados"
           destination: debug_logs_usados
           when: always
-
-workflows:
-  workflow_usados: # Nome do workflow atualizado
-    jobs:
-      - executar_scraper_usados
