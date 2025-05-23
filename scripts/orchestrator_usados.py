@@ -4,11 +4,12 @@ import logging
 import asyncio
 import json
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import (
@@ -20,6 +21,7 @@ from telegram import Bot
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
+# Configuração de logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - [%(module)s:%(funcName)s:%(lineno)d] - %(message)s",
@@ -29,13 +31,14 @@ logger = logging.getLogger("ORCHESTRATOR_USADOS")
 logger.propagate = False
 logger.setLevel(logging.INFO)
 
-# --- CONFIGURAÇÕES IMPORTANTES ---
-
-SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item[data-asin]"
-SELETOR_NOME_PRODUTO_USADO = "span.a-size-medium.a-color-base.a-text-normal"
-SELETOR_LINK_PRODUTO_USADO = "a.a-link-normal.s-no-outline"
-SELETOR_PRECO_USADO_DENTRO_DO_ITEM = "span.a-offscreen"
-SELETOR_INDICADOR_USADO_TEXTO = "span"
+# Configurações
+SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
+SELETOR_NOME_PRODUTO_USADO = "span.a-size-base-plus.a-color-base.a-text-normal"
+SELETOR_LINK_PRODUTO_USADO = "a.a-link-normal.s-underline-text.s-underline-link-text.s-link-style.a-text-normal"
+SELETOR_PRECO_USADO = "span.a-price-whole"
+SELETOR_FRACAO_PRECO = "span.a-price-fraction"
+SELETOR_INDICADOR_USADO = "span.a-size-base.a-color-secondary"
+SELETOR_PROXIMA_PAGINA = "a.s-pagination-next"
 
 USED_PRODUCTS_LINK = "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011&rh=n%3A24669725011&s=popularity-rank&fs=true&page=1&qid=1747998790&xpid=M2soDZTyDMNhF&ref=sr_pg_1"
 
@@ -50,7 +53,7 @@ try:
         MIN_DESCONTO_USADOS = 40
 except ValueError:
     MIN_DESCONTO_USADOS = 40
-logger.info(f"Desconto mínimo para notificação de usados (sobre o último visto): {MIN_DESCONTO_USADOS}%")
+logger.info(f"Desconto mínimo para notificação de usados: {MIN_DESCONTO_USADOS}%")
 
 USAR_HISTORICO_STR = os.getenv("USAR_HISTORICO_GLOBAL_USADOS", "true").strip().lower()
 USAR_HISTORICO = USAR_HISTORICO_STR == "true"
@@ -58,9 +61,7 @@ logger.info(f"Usar histórico para produtos usados: {USAR_HISTORICO}")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-TELEGRAM_CHAT_IDS_LIST = []
-if TELEGRAM_CHAT_IDS_STR:
-    TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
+TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
 MAX_PAGINAS_POR_LINK_GLOBAL = 10
 HISTORY_DIR_BASE = "history_files_usados"
@@ -70,13 +71,14 @@ GLOBAL_HISTORY_FILENAME = "price_history_USADOS_GLOBAL.json"
 os.makedirs(HISTORY_DIR_BASE, exist_ok=True)
 os.makedirs(DEBUG_LOGS_DIR_BASE, exist_ok=True)
 
-bot_instance_global = None
-
 def iniciar_driver_sync_worker(logger, driver_path=None):
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920x1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
 
     if driver_path:
         service = Service(driver_path)
@@ -86,9 +88,9 @@ def iniciar_driver_sync_worker(logger, driver_path=None):
     driver = webdriver.Chrome(service=service, options=chrome_options)
     return driver
 
-def send_telegram_message_async(bot, chat_id, message, parse_mode, logger):
+async def send_telegram_message_async(bot, chat_id, message, parse_mode, logger):
     try:
-        asyncio.run(bot.send_message(chat_id=chat_id, text=message, parse_mode=parse_mode))
+        await bot.send_message(chat_id=chat_id, text=message, parse_mode=parse_mode)
         logger.info(f"Mensagem enviada para {chat_id}")
         return True
     except TelegramError as e:
@@ -96,17 +98,36 @@ def send_telegram_message_async(bot, chat_id, message, parse_mode, logger):
         return False
 
 def escape_md(text):
-    return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\\1', text)
+    return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\1', text)
 
-def get_price_from_direct_text(element, selector, logger):
+def get_price_from_element(element, logger):
     try:
-        price_span = element.find_element(By.CSS_SELECTOR, selector)
-        raw_text = price_span.text
-        cleaned = re.sub(r'[^\d,]', '', raw_text).replace(',', '.')
+        price_whole = element.find_element(By.CSS_SELECTOR, SELETOR_PRECO_USADO).text
+        price_fraction = element.find_element(By.CSS_SELECTOR, SELETOR_FRACAO_PRECO).text
+        raw_price = f"{price_whole}.{price_fraction}"
+        cleaned = re.sub(r'[^\d.]', '', raw_price)
         return float(cleaned)
     except Exception as e:
         logger.error(f"Erro ao obter preço: {e}")
         return None
+
+def load_history():
+    history_path = os.path.join(HISTORY_DIR_BASE, GLOBAL_HISTORY_FILENAME)
+    if os.path.exists(history_path):
+        try:
+            with open(history_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.error(f"Erro ao carregar histórico: {e}")
+    return {}
+
+def save_history(history):
+    history_path = os.path.join(HISTORY_DIR_BASE, GLOBAL_HISTORY_FILENAME)
+    try:
+        with open(history_path, 'w', encoding='utf-8') as f:
+            json.dump(history, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.error(f"Erro ao salvar histórico: {e}")
 
 def get_url_for_page_worker(base_url, page_number):
     parsed_url = urlparse(base_url)
@@ -123,35 +144,112 @@ def check_captcha_sync_worker(driver, logger):
     except NoSuchElementException:
         return False
 
-async def orchestrate_all_usados_scrapes_main_async():
-    logger.info("--- INICIANDO ORQUESTRADOR DE SCRAPING DE USADOS ---")
-    driver = iniciar_driver_sync_worker(logger)
+async def process_category(driver, category, history):
+    url = category['url']
+    logger.info(f"Processando categoria: {category['name']}, URL: {url}")
+    bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN and TELEGRAM_CHAT_IDS_LIST else None
 
-    for category in CATEGORIES:
-        url = category['url']
-        logger.info(f"Processando categoria: {category['name']}, URL: {url}")
-        driver.get(url)
+    for page in range(1, MAX_PAGINAS_POR_LINK_GLOBAL + 1):
+        page_url = get_url_for_page_worker(url, page)
+        logger.info(f"Acessando página {page}: {page_url}")
+        driver.get(page_url)
+
+        if check_captcha_sync_worker(driver, logger):
+            logger.error("Interrompendo devido a captcha.")
+            break
 
         try:
-            WebDriverWait(driver, 10).until(
+            WebDriverWait(driver, 15).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO))
             )
             items = driver.find_elements(By.CSS_SELECTOR, SELETOR_ITEM_PRODUTO_USADO)
-            logger.info(f"Encontrados {len(items)} itens.")
-            for item in items:
-                nome = item.find_element(By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO).text
-                link = item.find_element(By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO).get_attribute('href')
-                preco = get_price_from_direct_text(item, SELETOR_PRECO_USADO_DENTRO_DO_ITEM, logger)
-                logger.info(f"Produto: {nome}, Preço: {preco}, Link: {link}")
-        except TimeoutException:
-            logger.warning("Timeout ao buscar produtos.")
+            logger.info(f"Página {page}: Encontrados {len(items)} itens.")
 
-    driver.quit()
-    logger.info("--- ORQUESTRADOR DE SCRAPING DE USADOS CONCLUÍDO ---")
+            for item in items:
+                try:
+                    # Verificar se é um produto usado
+                    try:
+                        indicador_usado = item.find_element(By.CSS_SELECTOR, SELETOR_INDICADOR_USADO).text
+                        if "usado" not in indicador_usado.lower():
+                            continue
+                    except NoSuchElementException:
+                        continue
+
+                    nome = item.find_element(By.CSS_SELECTOR, SELETOR_NOME_PRODUTO_USADO).text
+                    link = item.find_element(By.CSS_SELECTOR, SELETOR_LINK_PRODUTO_USADO).get_attribute('href')
+                    preco = get_price_from_element(item, logger)
+
+                    if not preco:
+                        logger.warning(f"Preço não encontrado para o produto: {nome}")
+                        continue
+
+                    asin = item.get_attribute('data-asin')
+                    if not asin:
+                        logger.warning(f"ASIN não encontrado para o produto: {nome}")
+                        continue
+
+                    # Gerenciar histórico
+                    if USAR_HISTORICO:
+                        if asin not in history:
+                            history[asin] = {'nome': nome, 'precos': [], 'link': link}
+                        last_price = history[asin]['precos'][-1]['preco'] if history[asin]['precos'] else None
+                        if last_price and preco >= last_price:
+                            continue  # Não notificar se o preço não diminuiu
+                        history[asin]['precos'].append({
+                            'preco': preco,
+                            'data': datetime.now().isoformat()
+                        })
+                        save_history(history)
+
+                    # Enviar notificação
+                    if bot:
+                        desconto_msg = f"Desconto: {((last_price - preco) / last_price * 100):.2f}%" if last_price else "Novo produto"
+                        message = (
+                            f"*Produto Usado*: {escape_md(nome)}\n"
+                            f"*Preço*: R${preco:.2f}\n"
+                            f"*Desconto*: {desconto_msg}\n"
+                            f"*Link*: {link}"
+                        )
+                        for chat_id in TELEGRAM_CHAT_IDS_LIST:
+                            await send_telegram_message_async(bot, chat_id, message, ParseMode.MARKDOWN, logger)
+
+                    logger.info(f"Produto: {nome}, Preço: R${preco:.2f}, Link: {link}")
+
+                except StaleElementReferenceException:
+                    logger.warning("Elemento obsoleto encontrado, continuando...")
+                    continue
+                except Exception as e:
+                    logger.error(f"Erro ao processar item: {e}")
+                    continue
+
+            # Verificar se há próxima página
+            try:
+                next_page = driver.find_element(By.CSS_SELECTOR, SELETOR_PROXIMA_PAGINA)
+                if 'disabled' in next_page.get_attribute('class'):
+                    logger.info("Última página alcançada.")
+                    break
+            except NoSuchElementException:
+                logger.info("Botão de próxima página não encontrado. Finalizando.")
+                break
+
+        except TimeoutException:
+            logger.warning(f"Timeout ao carregar página {page}.")
+            break
+
+async def orchestrate_all_usados_scrapes_main_async():
+    logger.info("--- INICIANDO ORQUESTRADOR DE SCRAPING DE USADOS ---")
+    driver = iniciar_driver_sync_worker(logger)
+    history = load_history()
+
+    try:
+        for category in CATEGORIES:
+            await process_category(driver, category, history)
+    finally:
+        driver.quit()
+        logger.info("--- ORQUESTRADOR DE SCRAPING DE USADOS CONCLUÍDO ---")
 
 if __name__ == "__main__":
     logger.info(f"Orquestrador de USADOS chamado via __main__ (scripts/{os.path.basename(__file__)})")
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_IDS_LIST:
         logger.warning("ALERTA USADOS: Token do Telegram ou Chat IDs não configurados. Notificações desabilitadas.")
-
     asyncio.run(orchestrate_all_usados_scrapes_main_async())
