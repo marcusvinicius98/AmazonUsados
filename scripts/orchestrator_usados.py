@@ -398,7 +398,10 @@ def load_proxy_list():
         if host and port:
             proxy_url = f'http://{username}:{password}@{host}:{port}' if username and password else f'http://{host}:{port}'
             proxy_list.append(proxy_url)
-    if not proxy_list: logger.warning("Nenhum proxy configurado."); else: logger.info(f"Carregados {len(proxy_list)} proxies.")
+    if not proxy_list:
+        logger.warning("Nenhum proxy configurado.")
+    else:
+        logger.info(f"Carregados {len(proxy_list)} proxies.")
     return proxy_list
 
 def test_proxy(proxy_url, logger_param):
