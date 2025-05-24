@@ -10,7 +10,7 @@ parameters:
   # Novo parâmetro para controlar a deleção do histórico
   apagar_historico:
     type: boolean
-    default: TRUE # Mais seguro começar com false
+    default: true # Mais seguro começar com false
   # Parâmetro para o número máximo de páginas por fluxo de categoria
   max_paginas_por_fluxo:
     type: string
@@ -77,7 +77,7 @@ jobs:
           name: Executar Script Orquestrador de Usados
           no_output_timeout: 60m # Aumentado para permitir execuções mais longas
           # Certifique-se que o caminho para o script está correto
-          command: python seu_script.py # Ajuste para o nome/caminho correto do seu script principal
+          command: python scripts/orchestrator_usados.py
       - run:
           name: Verificar arquivos gerados
           command: |
