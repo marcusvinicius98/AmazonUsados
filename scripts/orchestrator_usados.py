@@ -435,40 +435,39 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 
                                 mensagem_telegram = ""
                                 
-                                if preco_historico_val_para_msg and preco_historico_val_para_msg > price:
-                                    preco_antigo_formatado = f"R${preco_historico_val_para_msg:.2f}"
-                                    desconto_calculado_str = ""
-                                    if preco_historico_val_para_msg > 0:
-                                        percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
-                                        # Não escapar a string de desconto aqui, pois ela já está formatada e % não é problemático isoladamente
-                                        desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n"
-
-                                    titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️")
-                                    mensagem_telegram = (
-                                        f"*{titulo_mensagem}*\n\n"
-                                        f"🛒 {nome_produto_com_categoria}\n"
-                                        f"💰 De: {escape_md(preco_antigo_formatado)}\n"
-                                        f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
-                                        f"{desconto_calculado_str}\n" # Inclui a linha de desconto
-                                        f"🔗 [Ver produto]({link})\n\n"
-                                        f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
-                                        f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
-                                    )
-                                else: 
-                                    titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡")
-                                    mensagem_telegram = (
-                                        f"*{titulo_mensagem}*\n\n"
-                                        f"🛒 {nome_produto_com_categoria}\n"
-                                        f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
-                                        f"🔗 [Ver produto]({link})\n\n"
-                                        f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
-                                        f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
-                                    )
-
-                                for chat_id in TELEGRAM_CHAT_IDS_LIST:
-                                    await send_telegram_message_async(
-                                        bot_instance_global, chat_id, mensagem_telegram, ParseMode.MARKDOWN_V2, item_logger
-                                    )
+                                    if preco_historico_val_para_msg and preco_historico_val_para_msg > price:
+                                        preco_antigo_formatado = f"R${preco_historico_val_para_msg:.2f}"
+                                        desconto_calculado_str = ""
+                                        if preco_historico_val_para_msg > 0:
+                                            percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
+                                            desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n"
+                                
+                                        titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️")
+                                        mensagem_telegram = (
+                                            f"*{titulo_mensagem}*\n\n"
+                                            f"🛒 {nome_produto_com_categoria_escapado}\n"  # <--- USAR A VARIÁVEL CORRIGIDA
+                                            f"💰 De: {escape_md(preco_antigo_formatado)}\n"
+                                            f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
+                                            f"{desconto_calculado_str}\n"
+                                            f"🔗 [Ver produto]({link})\n\n"
+                                            f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
+                                            f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
+                                        )
+                                    else: 
+                                        titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡")
+                                        mensagem_telegram = (
+                                            f"*{titulo_mensagem}*\n\n"
+                                            f"🛒 {nome_produto_com_categoria_escapado}\n"  # <--- USAR A VARIÁVEL CORRIGIDA
+                                            f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
+                                            f"🔗 [Ver produto]({link})\n\n"
+                                            f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
+                                            f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
+                                        )
+                                
+                                    for chat_id in TELEGRAM_CHAT_IDS_LIST:
+                                        await send_telegram_message_async(
+                                            bot_instance_global, chat_id, mensagem_telegram, ParseMode.MARKDOWN_V2, item_logger
+                                        )
                     
                     except StaleElementReferenceException:
                         item_logger.warning("Elemento Selenium tornou-se obsoleto. Tentando buscar itens novamente na página.")
