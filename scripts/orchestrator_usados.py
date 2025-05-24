@@ -24,7 +24,7 @@ from selenium.common.exceptions import (
 from webdriver_manager.chrome import ChromeDriverManager
 from telegram import Bot
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import TelegramError, BadRequest # Importar BadRequest para fallback
 
 # --- Configuração de Logging ---
 logging.basicConfig(
@@ -75,7 +75,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_FLUXO = int(os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO", "13")) # Limite por categoria/ordenação
+MAX_PAGINAS_POR_FLUXO = int(os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO", "13"))
 logger.info(f"Máximo de páginas por fluxo de categoria/ordenação: {MAX_PAGINAS_POR_FLUXO}")
 
 HISTORY_DIR_BASE = "history_files_usados"
@@ -102,7 +102,6 @@ def escape_md(text):
     return re.sub(escape_chars, r'\\\1', str(text))
 
 def apagar_historico_usados():
-    """Apaga o arquivo de histórico de produtos usados."""
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
     try:
         if os.path.exists(history_path):
@@ -284,7 +283,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     item_logger = logging.getLogger(f"{logger.name}.Item_{pagina_atual}_{idx}")
                     item_logger.debug(f"Processando bloco de item {idx} da página {pagina_atual}")
                     
-                    nome, link, asin, price = None, None, None, None
+                    nome, link, asin, price, imagem_url = None, None, None, None, None # Adicionado imagem_url
                     preco_historico_val_para_msg = None 
                     notificar_este_produto = False
 
@@ -300,6 +299,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         item_html = item_element_selenium.get_attribute('outerHTML')
                         item_soup = BeautifulSoup(item_html, 'html.parser')
                         
+                        # Extração do Nome
                         title_div = item_soup.find('div', {'data-cy': 'title-recipe'})
                         if title_div:
                             h2 = title_div.find('h2')
@@ -313,6 +313,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                             continue
                         item_logger.debug(f"Nome (BS): '{nome}'")
 
+                        # Extração do Link e ASIN
                         link_tag = item_soup.find('a', href=re.compile(r'/dp/'))
                         if link_tag and link_tag.has_attr('href'):
                             href_val = link_tag['href']
@@ -335,6 +336,18 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 item_logger.warning(f"ASIN não encontrado no link '{link}' nem via data-asin. Ignorando item.")
                                 continue
                         
+                        # Extração da Imagem
+                        imagem_tag = item_soup.select_one('div.s-product-image-container img.s-image')
+                        imagem_url = imagem_tag['src'] if imagem_tag and imagem_tag.get('src') else None
+                        if imagem_url and not imagem_url.startswith('http'): # Improvável para src, mas por segurança
+                            imagem_url = f"https://www.amazon.com.br{imagem_url}"
+                        if not imagem_url:
+                            item_logger.warning(f"URL da imagem não encontrada para ASIN {asin}")
+                        else:
+                            item_logger.debug(f"URL da imagem (BS): {imagem_url}")
+
+
+                        # Extração do Preço
                         price_text_bs = None
                         secondary_offer_div = item_soup.find('div', {'data-cy': 'secondary-offer-recipe'})
                         if secondary_offer_div:
@@ -379,8 +392,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                             item_logger.warning(f"Preço não encontrado para ASIN {asin}. Ignorando item.")
                             continue
 
-                        if not all([nome, asin, link, price is not None]):
-                            item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Ignorando.")
+                        if not all([nome, asin, link, price is not None, imagem_url is not None]): # Verifica se todos os campos essenciais foram extraídos
+                            item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Nome: {nome}, Link: {link}, Preço: {price}, Imagem: {imagem_url}. Ignorando.")
                             continue
                         
                         if USAR_HISTORICO:
@@ -412,7 +425,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         if notificar_este_produto:
                             produto_atual_para_historico = {
                                 "nome": nome, "asin": asin, "link": link,
-                                "preco_usado": price, "timestamp": datetime.now().isoformat(),
+                                "preco_usado": price, "imagem_url": imagem_url, # Adiciona imagem ao histórico
+                                "timestamp": datetime.now().isoformat(),
                                 "fluxo": nome_fluxo
                             }
                             if USAR_HISTORICO:
@@ -434,29 +448,29 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 
                                 preco_atual_formatado = f"R${price:.2f}"
                                 
-                                mensagem_telegram = ""
+                                mensagem_telegram_caption = "" # Renomeado para caption
                                 
                                 if preco_historico_val_para_msg and preco_historico_val_para_msg > price:
                                     preco_antigo_formatado = f"R${preco_historico_val_para_msg:.2f}"
                                     desconto_calculado_str = ""
                                     if preco_historico_val_para_msg > 0:
                                         percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
-                                        desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n"
+                                        desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n" # Mantém \n para separar
 
                                     titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️")
-                                    mensagem_telegram = (
+                                    mensagem_telegram_caption = (
                                         f"*{titulo_mensagem}*\n\n"
                                         f"🛒 {nome_produto_com_categoria_escapado}\n"
                                         f"💰 De: {escape_md(preco_antigo_formatado)}\n"
                                         f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
-                                        f"{desconto_calculado_str}\n" 
-                                        f"🔗 [Ver produto]({link})\n\n"
+                                        f"{desconto_calculado_str}" # Removido o \n extra aqui, já está em desconto_calculado_str
+                                        f"\n🔗 [Ver produto]({link})\n\n" # Adicionado \n para espaço antes do link
                                         f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
                                         f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
                                     )
                                 else: 
                                     titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡")
-                                    mensagem_telegram = (
+                                    mensagem_telegram_caption = (
                                         f"*{titulo_mensagem}*\n\n"
                                         f"🛒 {nome_produto_com_categoria_escapado}\n"
                                         f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
@@ -466,9 +480,20 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                     )
 
                                 for chat_id in TELEGRAM_CHAT_IDS_LIST:
-                                    await send_telegram_message_async(
-                                        bot_instance_global, chat_id, mensagem_telegram, ParseMode.MARKDOWN_V2, item_logger
-                                    )
+                                    # Tenta enviar com foto, se falhar, envia só texto
+                                    if imagem_url:
+                                        sucesso_foto = await send_telegram_photo_with_caption_async(
+                                            bot_instance_global, chat_id, imagem_url, mensagem_telegram_caption, ParseMode.MARKDOWN_V2, item_logger
+                                        )
+                                        if not sucesso_foto: # Fallback para mensagem de texto se a foto falhar
+                                            item_logger.warning(f"Falha ao enviar foto para {asin}, enviando como texto.")
+                                            await send_telegram_message_async(
+                                                 bot_instance_global, chat_id, mensagem_telegram_caption, ParseMode.MARKDOWN_V2, item_logger
+                                            )
+                                    else: # Se não tem URL de imagem, envia como texto
+                                        await send_telegram_message_async(
+                                             bot_instance_global, chat_id, mensagem_telegram_caption, ParseMode.MARKDOWN_V2, item_logger
+                                        )
                     
                     except StaleElementReferenceException:
                         item_logger.warning("Elemento Selenium tornou-se obsoleto. Tentando buscar itens novamente na página.")
@@ -731,19 +756,38 @@ async def simulate_scroll(driver, logger_param):
         logger_param.error(f"Erro ao simular rolagem: {e}", exc_info=True)
 
 async def send_telegram_message_async(bot, chat_id, message, parse_mode, msg_logger):
-    msg_logger.debug(f"Tentando enviar mensagem para chat_id: {chat_id}")
+    msg_logger.debug(f"Tentando enviar mensagem de TEXTO para chat_id: {chat_id}")
     if not bot:
         msg_logger.error(f"[{msg_logger.name}] Instância do Bot não fornecida.")
         return False
     try:
         await bot.send_message(chat_id=chat_id, text=message, parse_mode=parse_mode)
-        msg_logger.info(f"[{msg_logger.name}] Notificação Telegram enviada para CHAT_ID {chat_id}.")
+        msg_logger.info(f"[{msg_logger.name}] Mensagem de TEXTO enviada para CHAT_ID {chat_id}.")
         return True
     except TelegramError as e_tg:
-        msg_logger.error(f"[{msg_logger.name}] Erro Telegram ao enviar para CHAT_ID {chat_id}: {e_tg.message}", exc_info=False) 
+        msg_logger.error(f"[{msg_logger.name}] Erro Telegram ao enviar TEXTO para CHAT_ID {chat_id}: {e_tg.message}", exc_info=False) 
         return False
     except Exception as e_msg:
-        msg_logger.error(f"[{msg_logger.name}] Erro inesperado ao enviar msg para CHAT_ID {chat_id}: {e_msg}", exc_info=True)
+        msg_logger.error(f"[{msg_logger.name}] Erro inesperado ao enviar TEXTO para CHAT_ID {chat_id}: {e_msg}", exc_info=True)
+        return False
+
+async def send_telegram_photo_with_caption_async(bot, chat_id, photo_url, caption, parse_mode, msg_logger):
+    msg_logger.debug(f"Tentando enviar FOTO para chat_id: {chat_id}, URL: {photo_url}")
+    if not bot:
+        msg_logger.error(f"[{msg_logger.name}] Instância do Bot não fornecida para foto.")
+        return False
+    try:
+        await bot.send_photo(chat_id=chat_id, photo=photo_url, caption=caption, parse_mode=parse_mode)
+        msg_logger.info(f"[{msg_logger.name}] FOTO com legenda enviada para CHAT_ID {chat_id}.")
+        return True
+    except BadRequest as e_bad_request: # Erros específicos de URL inválida, tamanho, etc.
+        msg_logger.warning(f"[{msg_logger.name}] Erro BadRequest ao enviar foto (URL inválida/inacessível/formato?): {photo_url}. Erro: {e_bad_request.message}. Tentando enviar como mensagem de texto.")
+        return await send_telegram_message_async(bot, chat_id, caption, parse_mode, msg_logger)
+    except TelegramError as e_tg: # Outros erros do Telegram
+        msg_logger.error(f"[{msg_logger.name}] Erro Telegram ao enviar FOTO para CHAT_ID {chat_id}: {e_tg.message}", exc_info=False)
+        return False # Não tenta fallback aqui, pois pode ser outro tipo de erro
+    except Exception as e_msg: # Erros genéricos
+        msg_logger.error(f"[{msg_logger.name}] Erro inesperado ao enviar FOTO para CHAT_ID {chat_id}: {e_msg}", exc_info=True)
         return False
 
 def load_history_geral():
