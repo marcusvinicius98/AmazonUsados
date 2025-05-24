@@ -10,7 +10,7 @@ parameters:
   # Novo parâmetro para controlar a deleção do histórico
   apagar_historico:
     type: boolean
-    default: true # Mais seguro começar com 
+    default: false # Mais seguro começar com 
   # Parâmetro para o número máximo de páginas por fluxo de categoria
   max_paginas_por_fluxo:
     type: string
