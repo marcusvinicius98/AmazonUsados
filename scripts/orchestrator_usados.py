@@ -32,23 +32,19 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - [%(name)s:%(funcName)s:%(lineno)d] - %(message)s",
     handlers=[logging.StreamHandler()]
 )
-logging.getLogger("webdriver_manager").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("telegram.bot").setLevel(logging.WARNING)
-logging.getLogger("telegram.ext").setLevel(logging.WARNING)
-logging.getLogger("bs4").setLevel(logging.WARNING)
+for lib_logger_name in ["webdriver_manager", "httpx", "telegram.bot", "telegram.ext", "bs4", "urllib3.connectionpool", "selenium.webdriver.remote.remote_connection"]:
+    logging.getLogger(lib_logger_name).setLevel(logging.WARNING)
 
 logger = logging.getLogger("SCRAPER_USADOS_GERAL")
 
 # --- Configurações do Scraper ---
 SELETOR_ITEM_PRODUTO_USADO = "div.s-result-item.s-asin"
-# XPath ATUALIZADO para melhor identificar itens com ofertas de usado
 SELETOR_INDICADOR_USADO_XPATH = (
     ".//span[contains(translate(., 'OFERTA DE PRODUTO USADO', 'oferta de produto usado'), 'oferta de produto usado') or "
     "contains(translate(., 'OFERTAS DE PRODUTOS USADOS', 'ofertas de produtos usados'), 'ofertas de produtos usados') or "
     "contains(translate(., 'USADO COMO NOVO', 'usado como novo'), 'usado como novo') or "
-    "(ancestor::div[@data-cy='secondary-offer-recipe'] and (contains(translate(., 'USADO', 'usado'), 'usado') or contains(translate(., 'USADA', 'usada'), 'usada')) ) or " # Para "X oferta de produto usado"
-    "(.//div[contains(@class, 's-price-instructions-style')]//a//span[contains(translate(., 'USADO', 'usado'), 'usado')])" # Mantém a lógica original como fallback
+    "(ancestor::div[@data-cy='secondary-offer-recipe'] and (contains(translate(., 'USADO', 'usado'), 'usado') or contains(translate(., 'USADA', 'usada'), 'usada')) ) or "
+    "(.//div[contains(@class, 's-price-instructions-style')]//a//span[contains(translate(., 'USADO', 'usado'), 'usado')])"
     "]"
 )
 logger.info(f"Usando SELETOR_INDICADOR_USADO_XPATH: {SELETOR_INDICADOR_USADO_XPATH}")
@@ -58,7 +54,7 @@ URL_GERAL_USADOS_BASE = (
     "https://www.amazon.com.br/s?i=warehouse-deals&srs=24669725011&bbn=24669725011"
     "&rh=n%3A24669725011&s=popularity-rank&fs=true&xpid=71AiW8sVquI1l"
 )
-NOME_FLUXO_GERAL = "Amazon Quase Novo (Geral)"
+NOME_FLUXO_BASE = "Amazon Quase Novo"
 
 MIN_DESCONTO_USADOS_STR = os.getenv("MIN_DESCONTO_PERCENTUAL_USADOS", "40").strip()
 try:
@@ -71,7 +67,6 @@ except ValueError:
     MIN_DESCONTO_USADOS = 40
 logger.info(f"Desconto mínimo para notificação de usados: {MIN_DESCONTO_USADOS}% (Observação: este filtro não está sendo aplicado explicitamente no código atual antes da notificação)")
 
-
 USAR_HISTORICO_STR = os.getenv("USAR_HISTORICO_USADOS", "true").strip().lower()
 USAR_HISTORICO = USAR_HISTORICO_STR == "true"
 logger.info(f"Usar histórico para produtos usados: {USAR_HISTORICO}")
@@ -80,8 +75,8 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_LINK_GLOBAL = int(os.getenv("MAX_PAGINAS_USADOS_GERAL", "500"))
-logger.info(f"Máximo de páginas para busca geral de usados: {MAX_PAGINAS_POR_LINK_GLOBAL}")
+MAX_PAGINAS_POR_FLUXO = int(os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO", "13"))
+logger.info(f"Máximo de páginas por fluxo de categoria/ordenação: {MAX_PAGINAS_POR_FLUXO}")
 
 HISTORY_DIR_BASE = "history_files_usados"
 DEBUG_LOGS_DIR_BASE = "debug_logs_usados"
@@ -102,17 +97,116 @@ if TELEGRAM_TOKEN and TELEGRAM_CHAT_IDS_LIST:
 else:
     logger.warning("Token do Telegram ou Chat IDs não configurados. Notificações Telegram desabilitadas.")
 
+def escape_md(text):
+    escape_chars = r'([_\*\[\]\(\)~`>#+\-=|{}.!])'
+    return re.sub(escape_chars, r'\\\1', str(text))
 
-async def process_used_products_geral_async(driver, base_url, nome_fluxo, history, logger, max_paginas=MAX_PAGINAS_POR_LINK_GLOBAL):
+def apagar_historico_usados():
+    """Apaga o arquivo de histórico de produtos usados."""
+    history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
+    try:
+        if os.path.exists(history_path):
+            os.remove(history_path)
+            logger.info(f"Arquivo de histórico '{history_path}' apagado com sucesso.")
+        else:
+            logger.info(f"Arquivo de histórico '{history_path}' não encontrado. Nada a apagar.")
+    except Exception as e:
+        logger.error(f"Erro ao tentar apagar o arquivo de histórico '{history_path}': {e}", exc_info=True)
+
+async def extract_category_links(driver, page_url, logger_param):
+    logger_param.info(f"Extraindo links de categoria de: {page_url}")
+    category_links = []
+    try:
+        await asyncio.to_thread(driver.get, page_url)
+        await asyncio.sleep(random.uniform(4, 7)) 
+        page_source = driver.page_source
+        soup = BeautifulSoup(page_source, 'html.parser')
+        
+        department_heading = soup.find('h1', string='Departamento')
+        department_list_ul = None
+        if department_heading:
+            department_group_div = department_heading.find_parent('div', role='group')
+            if department_group_div:
+                department_list_ul = department_group_div.find('ul', class_=re.compile(r'a-unordered-list'))
+        
+        if not department_list_ul:
+            department_list_ul = soup.select_one('div[id*="departments"] ul.a-nostyle') or \
+                                 soup.select_one('div[data-cel-widget*="refinements"] ul#s-refinements')
+
+        if department_list_ul:
+            list_items = department_list_ul.find_all('li', class_=re.compile(r'apb-browse-refinements-indent-2|a-spacing-micro|s-navigation-indent-2'))
+            
+            count = 0
+            for item_li in list_items:
+                link_tag = item_li.find('a', class_='a-link-normal', href=re.compile(r'/s\?'))
+                if link_tag:
+                    span_tag = link_tag.find('span', dir='auto')
+                    category_name = span_tag.get_text(strip=True) if span_tag else link_tag.get_text(strip=True)
+                    
+                    href = link_tag.get('href')
+                    if href and category_name:
+                        if not href.startswith('http'):
+                            href = f"https://www.amazon.com.br{href}"
+                        
+                        parsed_href = urlparse(href)
+                        query_params_href = parse_qs(parsed_href.query)
+                        
+                        parsed_base_url = urlparse(URL_GERAL_USADOS_BASE)
+                        base_query_params = parse_qs(parsed_base_url.query)
+
+                        query_params_href['i'] = base_query_params.get('i', ['warehouse-deals'])
+                        query_params_href['srs'] = base_query_params.get('srs', ['24669725011'])
+                        
+                        current_rh_list = query_params_href.get('rh', [])
+                        current_rh = current_rh_list[0] if current_rh_list else ''
+                        warehouse_node_rh = 'n:24669725011' 
+                        
+                        if warehouse_node_rh not in current_rh:
+                            cat_node_match = re.search(r'n%3A(\d+)', parsed_href.query) 
+                            if cat_node_match:
+                                specific_cat_node = cat_node_match.group(1)
+                                if specific_cat_node != base_query_params.get("bbn", [""])[0]:
+                                     query_params_href['rh'] = [f'{base_query_params.get("rh",["n%3A24669725011"])[0].split("%3A")[1]}%2Cn%3A{specific_cat_node}']
+                            else: 
+                                query_params_href['bbn'] = base_query_params.get('bbn', ['24669725011'])
+                        
+                        query_params_href.pop('qid', None)
+                        query_params_href.pop('ref', None)
+                        query_params_href.pop('s', None)
+                        query_params_href.pop('page', None)
+
+                        clean_href_query = urlencode(query_params_href, doseq=True)
+                        clean_href = urlunparse(parsed_href._replace(query=clean_href_query))
+
+                        if category_name.lower() in ["amazon quase novo", "todas", "departamento"]:
+                            logger_param.info(f"Ignorando categoria genérica: {category_name}")
+                            continue
+
+                        category_links.append({'name': category_name, 'url': clean_href})
+                        logger_param.info(f"Categoria encontrada: {category_name} -> {clean_href}")
+                        count +=1
+            if count == 0:
+                 logger_param.warning(f"Nenhum link de categoria válido encontrado após filtragem.")
+        else:
+            logger_param.warning("Elemento <ul> da lista de departamentos não encontrado com os seletores tentados.")
+
+    except Exception as e:
+        logger_param.error(f"Erro ao extrair links de categoria: {e}", exc_info=True)
+    
+    if not category_links:
+        logger_param.error("Nenhuma categoria foi extraída. Verifique os seletores em `extract_category_links` e o HTML da página de origem.")
+    return category_links
+
+
+async def process_used_products_geral_async(driver, base_url, nome_fluxo, history, logger, max_paginas=MAX_PAGINAS_POR_FLUXO):
     logger.info(f"--- Iniciando processamento para: {nome_fluxo} --- URL base: {base_url} ---")
-    total_produtos_usados_qualificados = []
+    total_produtos_usados_qualificados_nesta_execucao_fluxo = 0 
     pagina_atual = 1
     max_tentativas_pagina = 3
     consecutive_empty_pages = 0
     max_consecutive_empty_pages = 3
 
-    if max_paginas != MAX_PAGINAS_POR_LINK_GLOBAL:
-        logger.info(f"O parâmetro 'max_paginas' ({max_paginas}) é diferente de MAX_PAGINAS_POR_LINK_GLOBAL ({MAX_PAGINAS_POR_LINK_GLOBAL}). Usando {max_paginas}.")
+    logger.info(f"Máximo de páginas para este fluxo '{nome_fluxo}': {max_paginas}")
 
     while pagina_atual <= max_paginas:
         url_pagina = get_url_for_page_worker(base_url, pagina_atual, logger)
@@ -129,7 +223,7 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
 
                 try:
                     timestamp_page_dump = datetime.now().strftime('%Y%m%d_%H%M%S')
-                    page_dump_filename = f"page_dump_p{pagina_atual}_fluxo_{nome_fluxo.replace(' ', '_')}_{timestamp_page_dump}.html"
+                    page_dump_filename = f"page_dump_p{pagina_atual}_fluxo_{nome_fluxo.replace(' ', '_').replace('/', '-')}_{timestamp_page_dump}.html"
                     page_dump_path = os.path.join(DEBUG_LOGS_DIR_BASE, page_dump_filename)
                     with open(page_dump_path, "w", encoding="utf-8") as f_html_dump:
                         f_html_dump.write(driver.page_source)
@@ -138,8 +232,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     logger.error(f"Erro ao salvar o HTML da página {pagina_atual}: {e_save_dump}")
 
                 if check_captcha_sync_worker(driver, logger):
-                    logger.error(f"[{nome_fluxo}] CAPTCHA detectado na página {pagina_atual}. Interrompendo fluxo para esta URL base.")
-                    return total_produtos_usados_qualificados
+                    logger.error(f"[{nome_fluxo}] CAPTCHA detectado na página {pagina_atual}. Interrompendo fluxo para {nome_fluxo}.")
+                    return total_produtos_usados_qualificados_nesta_execucao_fluxo
 
                 if check_amazon_error_page_sync_worker(driver, logger):
                     logger.error(f"[{nome_fluxo}] Página de erro da Amazon detectada na página {pagina_atual}.")
@@ -148,8 +242,8 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         await asyncio.sleep(random.uniform(10, 20))
                         continue
                     else:
-                        logger.error(f"[{nome_fluxo}] Falha ao carregar página de produtos após {max_tentativas_pagina} tentativas devido a página de erro. Interrompendo.")
-                        return total_produtos_usados_qualificados
+                        logger.error(f"[{nome_fluxo}] Falha ao carregar página de produtos após {max_tentativas_pagina} tentativas devido a página de erro. Interrompendo {nome_fluxo}.")
+                        return total_produtos_usados_qualificados_nesta_execucao_fluxo
                 
                 try:
                     WebDriverWait(driver, 20).until(
@@ -163,23 +257,23 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                 logger.info(f"Página {pagina_atual}: Encontrados {len(items_selenium)} elementos com seletor Selenium '{SELETOR_ITEM_PRODUTO_USADO}'.")
 
                 if not items_selenium:
-                    logger.info(f"Página {pagina_atual} não contém produtos com o seletor principal. Verificando se é o fim.")
+                    logger.info(f"Página {pagina_atual} não contém produtos com o seletor principal para {nome_fluxo}. Verificando se é o fim.")
                     next_button_disabled = False
                     try:
                         driver.find_element(By.CSS_SELECTOR, ".s-pagination-item.s-pagination-next.s-pagination-disabled")
-                        logger.info("Botão 'Próximo' está desabilitado. Fim da paginação.")
+                        logger.info(f"Botão 'Próximo' está desabilitado para {nome_fluxo}. Fim da paginação.")
                         next_button_disabled = True
                     except NoSuchElementException:
                         logger.debug("Botão 'Próximo' não está desabilitado ou não foi encontrado.")
                     
                     if next_button_disabled:
-                        return total_produtos_usados_qualificados
+                        return total_produtos_usados_qualificados_nesta_execucao_fluxo
                     
                     consecutive_empty_pages += 1
                     if consecutive_empty_pages >= max_consecutive_empty_pages:
-                        logger.warning(f"{max_consecutive_empty_pages} páginas vazias consecutivas. Considerando fim da busca para {nome_fluxo}.")
-                        return total_produtos_usados_qualificados
-                    logger.info(f"Página {pagina_atual} vazia, mas não é o fim. Tentativa {consecutive_empty_pages}/{max_consecutive_empty_pages}.")
+                        logger.warning(f"{max_consecutive_empty_pages} páginas vazias consecutivas em {nome_fluxo}. Considerando fim da busca.")
+                        return total_produtos_usados_qualificados_nesta_execucao_fluxo
+                    logger.info(f"Página {pagina_atual} vazia em {nome_fluxo}, mas não é o fim. Tentativa {consecutive_empty_pages}/{max_consecutive_empty_pages}.")
                     page_processed_successfully = True 
                     break 
 
@@ -191,65 +285,57 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                     item_logger.debug(f"Processando bloco de item {idx} da página {pagina_atual}")
                     
                     nome, link, asin, price = None, None, None, None
+                    preco_historico_val_para_msg = None 
+                    notificar_este_produto = False
 
                     try:
-                        # Etapa 1: Verificar se o item é "usado" usando o XPath no elemento Selenium
                         try:
-                            # Usar o SELETOR_INDICADOR_USADO_XPATH atualizado aqui
                             indicador_usado_el = item_element_selenium.find_element(By.XPATH, SELETOR_INDICADOR_USADO_XPATH)
                             item_logger.debug(f"Indicador de 'usado' encontrado via XPath: '{indicador_usado_el.text.strip() if indicador_usado_el.text else 'Indicador presente (sem texto direto no elemento XPath)'}'")
                         except NoSuchElementException:
-                            # Se o data-asin estiver disponível, logue-o para facilitar a depuração
                             data_asin_sel = item_element_selenium.get_attribute('data-asin')
                             item_logger.debug(f"Item (ASIN Sel: {data_asin_sel if data_asin_sel else 'N/A'}) NÃO é uma listagem direta de 'usado' ou não tem oferta de usado clara (XPath '{SELETOR_INDICADOR_USADO_XPATH}' não encontrado). Ignorando este item.")
                             continue
 
                         item_html = item_element_selenium.get_attribute('outerHTML')
                         item_soup = BeautifulSoup(item_html, 'html.parser')
-
-                        # --- INÍCIO DA INTEGRAÇÃO DOS SNIPPETS FORNECIDOS PELO USUÁRIO ---
                         
-                        # Snippet de Extração do Nome
                         title_div = item_soup.find('div', {'data-cy': 'title-recipe'})
                         if title_div:
                             h2 = title_div.find('h2')
-                            span_nome_tag = h2.find('span') if h2 else None # Renomeado para evitar conflito
+                            span_nome_tag = h2.find('span') if h2 else None
                             nome = span_nome_tag.get_text(strip=True) if span_nome_tag else None
                         else:
-                            nome = None # Conforme snippet original do usuário
+                            nome = None 
 
                         if not nome:
-                            item_logger.debug("Nome do produto vazio (BS). Ignorando.") # Log do snippet do usuário
+                            item_logger.debug("Nome do produto vazio (BS). Ignorando.")
                             continue
-                        item_logger.debug(f"Nome (BS): '{nome}'") # Log adaptado
+                        item_logger.debug(f"Nome (BS): '{nome}'")
 
-                        # Snippet de Extração do Link e ASIN
-                        link_tag = item_soup.find('a', href=re.compile(r'/dp/')) # Snippet do usuário
+                        link_tag = item_soup.find('a', href=re.compile(r'/dp/'))
                         if link_tag and link_tag.has_attr('href'):
                             href_val = link_tag['href']
                             link = f"https://www.amazon.com.br{href_val}" if href_val.startswith("/") else href_val
-                            item_logger.debug(f"Link (BS): '{link}'") # Log adaptado
+                            item_logger.debug(f"Link (BS): '{link}'")
                         else:
-                            item_logger.warning("Link principal do produto não encontrado. Ignorando item.") # Log do snippet do usuário
+                            item_logger.warning("Link principal do produto não encontrado. Ignorando item.")
                             continue
 
-                        asin_match = re.search(r'/dp/([A-Z0-9]{10})', link) # Snippet do usuário
+                        asin_match = re.search(r'/dp/([A-Z0-9]{10})', link)
                         if asin_match:
                             asin = asin_match.group(1)
-                            item_logger.debug(f"ASIN (BS): '{asin}'") # Log adaptado
+                            item_logger.debug(f"ASIN (BS): '{asin}'")
                         else:
-                            # Tenta pegar do atributo data-asin do item principal como fallback
                             data_asin_value = item_element_selenium.get_attribute('data-asin')
                             if data_asin_value and len(data_asin_value) == 10:
                                 asin = data_asin_value
                                 item_logger.debug(f"ASIN (BS, fallback de data-asin): '{asin}'")
                             else:
-                                item_logger.warning(f"ASIN não encontrado no link '{link}' nem via data-asin. Ignorando item.") # Log do snippet do usuário, adaptado
+                                item_logger.warning(f"ASIN não encontrado no link '{link}' nem via data-asin. Ignorando item.")
                                 continue
                         
-                        # Snippet de Extração do Preço
                         price_text_bs = None
-                        # Tentativa de pegar o preço da oferta de usado específica primeiro (mais confiável)
                         secondary_offer_div = item_soup.find('div', {'data-cy': 'secondary-offer-recipe'})
                         if secondary_offer_div:
                             span_price_in_secondary = secondary_offer_div.find('span', class_='a-color-base')
@@ -257,81 +343,129 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 price_text_bs = span_price_in_secondary.get_text(strip=True)
                                 item_logger.debug(f"Preço (BS, via 'secondary-offer-recipe'): '{price_text_bs}'")
                         
-                        # Se não encontrou, usa o método do snippet do usuário (iterar todos os spans)
                         if not price_text_bs:
-                            item_logger.debug("Preço não encontrado em 'secondary-offer-recipe'. Usando iteração de spans (snippet do usuário).")
-                            for span_tag in item_soup.find_all('span'): # span_tag para não conflitar
+                            price_instructions_div_bs = item_soup.find('div', class_='s-price-instructions-style')
+                            if price_instructions_div_bs:
+                                price_link_tag_bs = price_instructions_div_bs.find('a', href=re.compile(r'/gp/offer-listing/'))
+                                if price_link_tag_bs:
+                                    price_span_offscreen_bs = price_link_tag_bs.find('span', class_='a-offscreen')
+                                    if price_span_offscreen_bs:
+                                        price_text_bs = price_span_offscreen_bs.get_text(strip=True)
+                                        item_logger.debug(f"Preço (BS, via 's-price-instructions-style' > 'a-offscreen'): '{price_text_bs}'")
+                        
+                        if not price_text_bs:
+                            item_logger.debug("Preço não encontrado em estruturas específicas. Usando iteração genérica de spans.")
+                            for span_tag in item_soup.find_all('span'):
                                 text = span_tag.get_text(strip=True)
                                 if text.startswith('R$'):
                                     price_text_bs = text
                                     item_logger.debug(f"Preço (BS, via iteração de span): '{price_text_bs}'")
-                                    break # Conforme snippet do usuário
+                                    break 
 
                         if price_text_bs:
-                            match = re.search(r'R\$\s?([\d.,]+)', price_text_bs) # Snippet do usuário
+                            match = re.search(r'R\$\s?([\d.,]+)', price_text_bs)
                             if match:
                                 cleaned_price_str = match.group(1).replace('.', '').replace(',', '.')
                                 try:
                                     price = float(cleaned_price_str)
-                                    item_logger.debug(f"Preço final (BS): {price}") # Log adaptado
+                                    item_logger.debug(f"Preço final (BS): {price}")
                                 except ValueError:
-                                    item_logger.warning(f"Erro ao converter preço '{cleaned_price_str}' para float.") # Log do snippet do usuário
+                                    item_logger.warning(f"Erro ao converter preço '{cleaned_price_str}' para float.")
                                     continue
                             else:
-                                item_logger.warning(f"Formato de preço inesperado: '{price_text_bs}'. Ignorando item.") # Log do snippet do usuário
+                                item_logger.warning(f"Formato de preço inesperado: '{price_text_bs}'. Ignorando item.")
                                 continue
                         else:
-                            item_logger.warning(f"Preço não encontrado para ASIN {asin}. Ignorando item.") # Log do snippet do usuário
+                            item_logger.warning(f"Preço não encontrado para ASIN {asin}. Ignorando item.")
                             continue
-
-                        # --- FIM DA INTEGRAÇÃO DOS SNIPPETS ---
 
                         if not all([nome, asin, link, price is not None]):
-                            item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Nome: {nome}, Link: {link}, Preço: {price}. Ignorando.")
+                            item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Ignorando.")
                             continue
-
-                        produto = {
-                            "nome": nome, "asin": asin, "link": link,
-                            "preco_usado": price, "timestamp": datetime.now().isoformat(),
-                            "fluxo": nome_fluxo
-                        }
-
+                        
+                        # Lógica de histórico e decisão de notificação
                         if USAR_HISTORICO:
                             preco_historico_info = history.get(asin)
                             if preco_historico_info:
                                 preco_historico_val = preco_historico_info.get("preco_usado")
                                 if preco_historico_val and preco_historico_val <= price:
-                                    item_logger.info(f"ASIN {asin}: Preço atual (R${price:.2f}) não é menor que histórico (R${preco_historico_val:.2f}). Sem notificação.")
-                                    continue
-                                else:
-                                    item_logger.info(f"ASIN {asin}: Novo preço (R${price:.2f}) melhor que histórico (R${preco_historico_val if preco_historico_val else 'N/A'}).")
-                            else:
-                                item_logger.info(f"ASIN {asin} não está no histórico. Novo produto 'usado' qualificado.")
-                            
-                            history[asin] = produto
-                            save_history_geral(history)
-                        
-                        total_produtos_usados_qualificados.append(produto)
-                        produtos_processados_e_notificados_na_pagina += 1
-                        item_logger.info(f"PRODUTO QUALIFICADO: '{nome}' | Preço: R${price:.2f} | ASIN: {asin}")
+                                    item_logger.info(f"ASIN {asin}: Preço atual (R${price:.2f}) não é menor ou é igual ao histórico (R${preco_historico_val:.2f}). Sem nova notificação.")
+                                    # Atualiza o timestamp mas não notifica
+                                    produto_existente = history[asin]
+                                    produto_existente["timestamp"] = datetime.now().isoformat()
+                                    if price > preco_historico_val: # Se o preço aumentou, atualiza para o novo (mais alto)
+                                        produto_existente["preco_usado"] = price
+                                    history[asin] = produto_existente
+                                    save_history_geral(history) # Salva a atualização do timestamp/preço maior
+                                    continue 
+                                else: 
+                                    item_logger.info(f"ASIN {asin}: Novo preço (R${price:.2f}) melhor que histórico (R${preco_historico_val if preco_historico_val else 'N/A'}). Notificando.")
+                                    notificar_este_produto = True
+                                    if preco_historico_val: 
+                                        preco_historico_val_para_msg = preco_historico_val
+                            else: 
+                                item_logger.info(f"ASIN {asin} não está no histórico. Novo produto 'usado' qualificado. Notificando.")
+                                notificar_este_produto = True
+                        else: 
+                             notificar_este_produto = True
+                             item_logger.info(f"ASIN {asin}: Processando sem verificação de histórico. Notificando.")
 
-                        if bot_instance_global and TELEGRAM_CHAT_IDS_LIST:
-                            # Formata o preço primeiro
-                            preco_formatado_str = f"R${price:.2f}"
+                        if notificar_este_produto:
+                            produto_atual_para_historico = { # Criar uma cópia para o histórico
+                                "nome": nome, "asin": asin, "link": link,
+                                "preco_usado": price, "timestamp": datetime.now().isoformat(),
+                                "fluxo": nome_fluxo # Guarda o fluxo que encontrou/atualizou pela última vez
+                            }
+                            if USAR_HISTORICO:
+                                history[asin] = produto_atual_para_historico
+                                save_history_geral(history)
                             
-                            # Monta a mensagem escapando as partes necessárias
-                            message = (
-                                f"*{escape_md(nome_fluxo)}*\n\n"
-                                f"📦 *{escape_md(str(nome))}*\n"  # Garante que nome seja string antes de escapar
-                                f"💵 Preço Usado: *{escape_md(preco_formatado_str)}*\n"  # <--- MUDANÇA IMPORTANTE AQUI
-                                f"🔗 [Ver na Amazon]({link})\n\n"  # Links em Markdown [texto](url) geralmente não precisam ser escapados, o Telegram lida com eles.
-                                f"🏷️ ASIN: `{escape_md(str(asin))}`\n" # Garante que asin seja string
-                                f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}" # Escapar a data/hora por segurança
-                            )
-                            for chat_id in TELEGRAM_CHAT_IDS_LIST:
-                                await send_telegram_message_async(
-                                    bot_instance_global, chat_id, message, ParseMode.MARKDOWN_V2, item_logger
-                                )
+                            total_produtos_usados_qualificados_nesta_execucao_fluxo += 1
+                            produtos_processados_e_notificados_na_pagina += 1
+                            item_logger.info(f"PRODUTO QUALIFICADO PARA NOTIFICAÇÃO: '{nome}' | Preço: R${price:.2f} | ASIN: {asin}")
+
+                            if bot_instance_global and TELEGRAM_CHAT_IDS_LIST:
+                                categoria_match = re.search(rf"{NOME_FLUXO_BASE} - (.*?) - (Menor Preço|Maior Preço)", nome_fluxo)
+                                nome_categoria_para_msg = categoria_match.group(1) if categoria_match else "Geral"
+                                if "Geral (Fallback)" in nome_categoria_para_msg:
+                                    nome_categoria_para_msg = "Geral"
+                                
+                                nome_produto_com_categoria = f"{escape_md(str(nome))} ({escape_md(nome_categoria_para_msg)})"
+                                preco_atual_formatado = f"R${price:.2f}"
+                                
+                                mensagem_telegram = ""
+                                
+                                if preco_historico_val_para_msg and preco_historico_val_para_msg > price: # Certifica-se de que o preço realmente baixou
+                                    preco_antigo_formatado = f"R${preco_historico_val_para_msg:.2f}"
+                                    desconto_calculado = ""
+                                    if preco_historico_val_para_msg > 0: # Evita divisão por zero
+                                        percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
+                                        desconto_calculado = f"📉 Desconto: {percentual_desconto:.1f}%\n"
+
+                                    mensagem_telegram = (
+                                        f"↘️ *PREÇO BAIXOU!* ↙️\n\n"
+                                        f"🛒 {nome_produto_com_categoria}\n"
+                                        f"💰 De: {escape_md(preco_antigo_formatado)}\n"
+                                        f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
+                                        f"{desconto_calculado}\n"
+                                        f"🔗 [Ver produto]({link})\n\n"
+                                        f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
+                                        f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
+                                    )
+                                else: 
+                                    mensagem_telegram = (
+                                        f"🟡 *NOVO NO QUASE NOVO!* 🟡\n\n"
+                                        f"🛒 {nome_produto_com_categoria}\n"
+                                        f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
+                                        f"🔗 [Ver produto]({link})\n\n"
+                                        f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
+                                        f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
+                                    )
+
+                                for chat_id in TELEGRAM_CHAT_IDS_LIST:
+                                    await send_telegram_message_async(
+                                        bot_instance_global, chat_id, mensagem_telegram, ParseMode.MARKDOWN_V2, item_logger
+                                    )
                     
                     except StaleElementReferenceException:
                         item_logger.warning("Elemento Selenium tornou-se obsoleto. Tentando buscar itens novamente na página.")
@@ -341,33 +475,33 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                         continue
 
                 if produtos_processados_e_notificados_na_pagina > 0:
-                    logger.info(f"Página {pagina_atual}: {produtos_processados_e_notificados_na_pagina} produtos 'usados' qualificados, processados e notificados.")
+                    logger.info(f"Página {pagina_atual}: {produtos_processados_e_notificados_na_pagina} produtos qualificados e notificados para o fluxo {nome_fluxo}.")
                 else:
-                    logger.info(f"Página {pagina_atual}: Nenhum produto novo ou com preço melhorado encontrado para notificação (após todas as verificações).")
+                    logger.info(f"Página {pagina_atual}: Nenhum produto novo ou com preço melhorado encontrado para notificação no fluxo {nome_fluxo} (após todas as verificações).")
                 
                 page_processed_successfully = True
                 break 
 
             except WebDriverException as e_wd:
-                logger.error(f"Erro de WebDriver ao carregar página {pagina_atual} (Tentativa {tentativa}): {str(e_wd)[:200]}", exc_info=False)
+                logger.error(f"Erro de WebDriver ao carregar página {pagina_atual} (Tentativa {tentativa}) no fluxo {nome_fluxo}: {str(e_wd)[:200]}", exc_info=False)
                 if tentativa < max_tentativas_pagina:
                     await asyncio.sleep(random.uniform(15, 30))
                     continue
                 else:
-                    logger.error(f"Falha crítica após {max_tentativas_pagina} tentativas na página {pagina_atual} (WebDriverException). Interrompendo {nome_fluxo}.")
-                    return total_produtos_usados_qualificados
+                    logger.error(f"Falha crítica após {max_tentativas_pagina} tentativas na página {pagina_atual} (WebDriverException) no fluxo {nome_fluxo}. Interrompendo este fluxo.")
+                    return total_produtos_usados_qualificados_nesta_execucao_fluxo
             except Exception as e_page:
-                logger.error(f"Erro geral ao processar página {pagina_atual} (Tentativa {tentativa}): {e_page}", exc_info=True)
+                logger.error(f"Erro geral ao processar página {pagina_atual} (Tentativa {tentativa}) no fluxo {nome_fluxo}: {e_page}", exc_info=True)
                 if tentativa < max_tentativas_pagina:
                     await asyncio.sleep(random.uniform(10, 20))
                     continue
                 else:
-                    logger.error(f"Falha crítica após {max_tentativas_pagina} tentativas na página {pagina_atual} (Erro Geral). Interrompendo {nome_fluxo}.")
-                    return total_produtos_usados_qualificados
+                    logger.error(f"Falha crítica após {max_tentativas_pagina} tentativas na página {pagina_atual} (Erro Geral) no fluxo {nome_fluxo}. Interrompendo este fluxo.")
+                    return total_produtos_usados_qualificados_nesta_execucao_fluxo
         
         if not page_processed_successfully:
-            logger.error(f"Não foi possível processar a página {pagina_atual} de {nome_fluxo} após {max_tentativas_pagina} tentativas. Abortando este fluxo.")
-            return total_produtos_usados_qualificados
+            logger.error(f"Não foi possível processar a página {pagina_atual} do fluxo {nome_fluxo} após {max_tentativas_pagina} tentativas. Abortando este fluxo.")
+            return total_produtos_usados_qualificados_nesta_execucao_fluxo
 
         pagina_atual += 1
         if pagina_atual <= max_paginas : 
@@ -375,12 +509,13 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
 
     logger.info(
         f"--- Concluído Fluxo: {nome_fluxo}. Máximo de páginas ({max_paginas}) atingido ou fim da paginação. "
-        f"Total de produtos 'usados' qualificados encontrados nesta execução: {len(total_produtos_usados_qualificados)} ---"
+        f"Total de produtos qualificados e notificados neste fluxo específico: {total_produtos_usados_qualificados_nesta_execucao_fluxo} ---"
     )
-    return total_produtos_usados_qualificados
+    return total_produtos_usados_qualificados_nesta_execucao_fluxo
+
 
 async def run_usados_geral_scraper_async():
-    logger.info(f"--- [SCRAPER INÍCIO] Fluxo: {NOME_FLUXO_GERAL} ---")
+    logger.info(f"--- [SCRAPER INÍCIO GERAL] ---")
     driver = None
     try:
         logger.info("Tentando iniciar o driver Selenium...")
@@ -396,11 +531,45 @@ async def run_usados_geral_scraper_async():
         if USAR_HISTORICO:
             history = load_history_geral()
         
-        await process_used_products_geral_async(driver, URL_GERAL_USADOS_BASE, NOME_FLUXO_GERAL, history, logger, MAX_PAGINAS_POR_LINK_GLOBAL)
-        logger.info("Processamento do fluxo de usados geral concluído.")
+        logger.info(f"Tentando extrair categorias da URL base: {URL_GERAL_USADOS_BASE}")
+        category_urls_data = await extract_category_links(driver, URL_GERAL_USADOS_BASE, logger)
+
+        if not category_urls_data:
+            logger.warning("Nenhuma categoria foi extraída. O scraper prosseguirá apenas com a URL geral de 'Quase Novo'.")
+            category_urls_data.append({'name': 'Geral (Fallback)', 'url': URL_GERAL_USADOS_BASE})
+        
+        for cat_data in category_urls_data:
+            cat_name = cat_data['name']
+            cat_url_base = cat_data['url']
+            
+            ordenacoes = [
+                {'s_param': 'price-asc-rank', 'label': 'Menor Preço'},
+                {'s_param': 'price-desc-rank', 'label': 'Maior Preço'}
+            ]
+
+            for ordenacao in ordenacoes:
+                parsed_cat_url = urlparse(cat_url_base)
+                query_params_cat = parse_qs(parsed_cat_url.query)
+                query_params_cat['s'] = [ordenacao['s_param']]
+                query_params_cat.pop('page', None)
+                query_params_cat.pop('qid', None)
+                query_params_cat.pop('ref', None)
+                
+                ordered_cat_url_query = urlencode(query_params_cat, doseq=True)
+                ordered_cat_url = urlunparse(parsed_cat_url._replace(query=ordered_cat_url_query))
+                
+                fluxo_nome_atual = f"{NOME_FLUXO_BASE} - {cat_name} - {ordenacao['label']}"
+                
+                logger.info(f"Iniciando scraper para: {fluxo_nome_atual} - URL: {ordered_cat_url}")
+                await process_used_products_geral_async(
+                    driver, ordered_cat_url, fluxo_nome_atual, history, logger, MAX_PAGINAS_POR_FLUXO
+                )
+                await asyncio.sleep(random.uniform(5, 10))
+
+        logger.info(f"Processamento de todos os fluxos de categoria concluído. Total de ASINs no histórico final: {len(history)}.")
 
     except Exception as e:
-        logger.error(f"Erro catastrófico no fluxo geral de usados (run_usados_geral_scraper_async): {e}", exc_info=True)
+        logger.error(f"Erro catastrófico no scraper geral de usados (run_usados_geral_scraper_async): {e}", exc_info=True)
     finally:
         if driver:
             logger.info("Tentando fechar o driver Selenium...")
@@ -409,8 +578,9 @@ async def run_usados_geral_scraper_async():
                 logger.info("Driver Selenium fechado.")
             except Exception as e_quit:
                 logger.error(f"Erro ao fechar o driver: {e_quit}", exc_info=True)
-        logger.info(f"--- [SCRAPER FIM] Fluxo: {NOME_FLUXO_GERAL} ---")
+        logger.info(f"--- [SCRAPER FIM GERAL] ---")
 
+# ... (demais funções auxiliares: load_proxy_list, test_proxy, get_working_proxy, iniciar_driver_sync_worker, etc. permanecem iguais) ...
 def load_proxy_list():
     proxy_list = []
     proxy_hosts = os.getenv("PROXY_HOST", "").strip().split(',')
@@ -563,14 +733,11 @@ async def send_telegram_message_async(bot, chat_id, message, parse_mode, msg_log
         msg_logger.info(f"[{msg_logger.name}] Notificação Telegram enviada para CHAT_ID {chat_id}.")
         return True
     except TelegramError as e_tg:
-        msg_logger.error(f"[{msg_logger.name}] Erro Telegram ao enviar para CHAT_ID {chat_id}: {e_tg.message}", exc_info=False)
+        msg_logger.error(f"[{msg_logger.name}] Erro Telegram ao enviar para CHAT_ID {chat_id}: {e_tg.message}", exc_info=False) 
         return False
     except Exception as e_msg:
         msg_logger.error(f"[{msg_logger.name}] Erro inesperado ao enviar msg para CHAT_ID {chat_id}: {e_msg}", exc_info=True)
         return False
-
-def escape_md(text):
-    return re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}.!])', r'\\\1', str(text))
 
 def load_history_geral():
     history_path = os.path.join(HISTORY_DIR_BASE, HISTORY_FILENAME_USADOS_GERAL)
@@ -602,10 +769,11 @@ def get_url_for_page_worker(base_url, page_number, current_run_logger):
     current_run_logger.debug(f"Gerando URL para página {page_number} a partir de base: {base_url}")
     parsed_url = urlparse(base_url)
     query_params = parse_qs(parsed_url.query)
+    
     query_params['page'] = [str(page_number)]
-    qid_time = int(time.time() * 1000)
-    query_params['qid'] = [str(qid_time)]
+    query_params['qid'] = [str(int(time.time() * 1000))] 
     query_params['ref'] = [f'sr_pg_{page_number}']
+    
     new_query = urlencode(query_params, doseq=True)
     final_url = urlunparse(parsed_url._replace(query=new_query))
     current_run_logger.debug(f"URL da página gerada: {final_url}")
@@ -710,12 +878,16 @@ def wait_for_page_load(driver, logger_param, timeout=60):
         logger_param.error(f"Erro ao esperar carregamento da página: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    current_max_pages_env = os.getenv("MAX_PAGINAS_USADOS_GERAL")
+    if os.getenv("APAGAR_HISTORICO_USADOS", "false").lower() == "true":
+        logger.info("Variável APAGAR_HISTORICO_USADOS definida como true. Apagando histórico...")
+        apagar_historico_usados()
+
+    current_max_pages_env = os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO")
     if current_max_pages_env:
         try:
-            MAX_PAGINAS_POR_LINK_GLOBAL = int(current_max_pages_env)
-            logger.info(f"MAX_PAGINAS_POR_LINK_GLOBAL atualizado para: {MAX_PAGINAS_POR_LINK_GLOBAL} (via env var no __main__)")
+            MAX_PAGINAS_POR_FLUXO = int(current_max_pages_env)
+            logger.info(f"MAX_PAGINAS_POR_FLUXO atualizado para: {MAX_PAGINAS_POR_FLUXO} (via env var no __main__)")
         except ValueError:
-            logger.warning(f"Valor inválido para MAX_PAGINAS_USADOS_GERAL no __main__: '{current_max_pages_env}'. Usando o valor inicial: {MAX_PAGINAS_POR_LINK_GLOBAL}")
+            logger.warning(f"Valor inválido para MAX_PAGINAS_USADOS_POR_FLUXO no __main__: '{current_max_pages_env}'. Usando o valor padrão: {MAX_PAGINAS_POR_FLUXO}")
     
     asyncio.run(run_usados_geral_scraper_async())
