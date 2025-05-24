@@ -390,13 +390,12 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 preco_historico_val = preco_historico_info.get("preco_usado")
                                 if preco_historico_val and preco_historico_val <= price:
                                     item_logger.info(f"ASIN {asin}: Preço atual (R${price:.2f}) não é menor ou é igual ao histórico (R${preco_historico_val:.2f}). Sem nova notificação.")
-                                    # Atualiza o timestamp mas não notifica
                                     produto_existente = history[asin]
                                     produto_existente["timestamp"] = datetime.now().isoformat()
-                                    if price > preco_historico_val: # Se o preço aumentou, atualiza para o novo (mais alto)
+                                    if price > preco_historico_val:
                                         produto_existente["preco_usado"] = price
                                     history[asin] = produto_existente
-                                    save_history_geral(history) # Salva a atualização do timestamp/preço maior
+                                    save_history_geral(history)
                                     continue 
                                 else: 
                                     item_logger.info(f"ASIN {asin}: Novo preço (R${price:.2f}) melhor que histórico (R${preco_historico_val if preco_historico_val else 'N/A'}). Notificando.")
@@ -410,11 +409,12 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                              notificar_este_produto = True
                              item_logger.info(f"ASIN {asin}: Processando sem verificação de histórico. Notificando.")
 
+
                         if notificar_este_produto:
-                            produto_atual_para_historico = { # Criar uma cópia para o histórico
+                            produto_atual_para_historico = {
                                 "nome": nome, "asin": asin, "link": link,
                                 "preco_usado": price, "timestamp": datetime.now().isoformat(),
-                                "fluxo": nome_fluxo # Guarda o fluxo que encontrou/atualizou pela última vez
+                                "fluxo": nome_fluxo
                             }
                             if USAR_HISTORICO:
                                 history[asin] = produto_atual_para_historico
@@ -435,26 +435,29 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                 
                                 mensagem_telegram = ""
                                 
-                                if preco_historico_val_para_msg and preco_historico_val_para_msg > price: # Certifica-se de que o preço realmente baixou
+                                if preco_historico_val_para_msg and preco_historico_val_para_msg > price:
                                     preco_antigo_formatado = f"R${preco_historico_val_para_msg:.2f}"
-                                    desconto_calculado = ""
-                                    if preco_historico_val_para_msg > 0: # Evita divisão por zero
+                                    desconto_calculado_str = ""
+                                    if preco_historico_val_para_msg > 0:
                                         percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
-                                        desconto_calculado = f"📉 Desconto: {percentual_desconto:.1f}%\n"
+                                        # Não escapar a string de desconto aqui, pois ela já está formatada e % não é problemático isoladamente
+                                        desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n"
 
+                                    titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️")
                                     mensagem_telegram = (
-                                        f"↘️ *PREÇO BAIXOU!* ↙️\n\n"
+                                        f"*{titulo_mensagem}*\n\n"
                                         f"🛒 {nome_produto_com_categoria}\n"
                                         f"💰 De: {escape_md(preco_antigo_formatado)}\n"
                                         f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
-                                        f"{desconto_calculado}\n"
+                                        f"{desconto_calculado_str}\n" # Inclui a linha de desconto
                                         f"🔗 [Ver produto]({link})\n\n"
                                         f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
                                         f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
                                     )
                                 else: 
+                                    titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡")
                                     mensagem_telegram = (
-                                        f"🟡 *NOVO NO QUASE NOVO!* 🟡\n\n"
+                                        f"*{titulo_mensagem}*\n\n"
                                         f"🛒 {nome_produto_com_categoria}\n"
                                         f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
                                         f"🔗 [Ver produto]({link})\n\n"
