@@ -75,7 +75,7 @@ TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "").strip()
 TELEGRAM_CHAT_IDS_STR = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_CHAT_IDS_LIST = [chat_id.strip() for chat_id in TELEGRAM_CHAT_IDS_STR.split(',') if chat_id.strip()]
 
-MAX_PAGINAS_POR_FLUXO = int(os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO", "13"))
+MAX_PAGINAS_POR_FLUXO = int(os.getenv("MAX_PAGINAS_USADOS_POR_FLUXO", "13")) # Limite por categoria/ordenação
 logger.info(f"Máximo de páginas por fluxo de categoria/ordenação: {MAX_PAGINAS_POR_FLUXO}")
 
 HISTORY_DIR_BASE = "history_files_usados"
@@ -383,7 +383,6 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                             item_logger.warning(f"Dados incompletos para ASIN {asin if asin else 'desconhecido'} após extração BS. Ignorando.")
                             continue
                         
-                        # Lógica de histórico e decisão de notificação
                         if USAR_HISTORICO:
                             preco_historico_info = history.get(asin)
                             if preco_historico_info:
@@ -425,12 +424,11 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                             item_logger.info(f"PRODUTO QUALIFICADO PARA NOTIFICAÇÃO: '{nome}' | Preço: R${price:.2f} | ASIN: {asin}")
 
                             if bot_instance_global and TELEGRAM_CHAT_IDS_LIST:
-                                categoria_match = re.search(rf"{NOME_FLUXO_BASE} - (.*?) - (Menor Preço|Maior Preço)", nome_fluxo)
+                                categoria_match = re.search(rf"{NOME_FLUXO_BASE} - (.*?) - (Menor Preço|Maior Preço|Destaque|Avaliação|Lançamento|Mais Vendido)", nome_fluxo)
                                 nome_categoria_para_msg = categoria_match.group(1) if categoria_match else "Geral"
                                 if "Geral (Fallback)" in nome_categoria_para_msg:
                                     nome_categoria_para_msg = "Geral"
                                 
-                                # CORREÇÃO AQUI: Escapar a string completa com nome e categoria
                                 nome_com_categoria_nao_escapado = f"{str(nome)} ({nome_categoria_para_msg})"
                                 nome_produto_com_categoria_escapado = escape_md(nome_com_categoria_nao_escapado)
                                 
@@ -445,10 +443,10 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                         percentual_desconto = ((preco_historico_val_para_msg - price) / preco_historico_val_para_msg) * 100
                                         desconto_calculado_str = f"📉 Desconto: {percentual_desconto:.1f}%\n"
 
-                                    titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️") # Escapa o título
+                                    titulo_mensagem = escape_md("↘️ PREÇO BAIXOU! ↙️")
                                     mensagem_telegram = (
                                         f"*{titulo_mensagem}*\n\n"
-                                        f"🛒 {nome_produto_com_categoria_escapado}\n" # Usa a string escapada
+                                        f"🛒 {nome_produto_com_categoria_escapado}\n"
                                         f"💰 De: {escape_md(preco_antigo_formatado)}\n"
                                         f"💸 Por: *{escape_md(preco_atual_formatado)}*\n"
                                         f"{desconto_calculado_str}\n" 
@@ -457,10 +455,10 @@ async def process_used_products_geral_async(driver, base_url, nome_fluxo, histor
                                         f"🕒 {escape_md(datetime.now().strftime('%d/%m/%Y %H:%M:%S'))}"
                                     )
                                 else: 
-                                    titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡") # Escapa o título
+                                    titulo_mensagem = escape_md("🟡 NOVO NO QUASE NOVO! 🟡")
                                     mensagem_telegram = (
                                         f"*{titulo_mensagem}*\n\n"
-                                        f"🛒 {nome_produto_com_categoria_escapado}\n" # Usa a string escapada
+                                        f"🛒 {nome_produto_com_categoria_escapado}\n"
                                         f"💰 Por: *{escape_md(preco_atual_formatado)}*\n\n"
                                         f"🔗 [Ver produto]({link})\n\n"
                                         f"🏷️ ASIN: `{escape_md(str(asin))}`\n"
@@ -548,8 +546,12 @@ async def run_usados_geral_scraper_async():
             cat_url_base = cat_data['url']
             
             ordenacoes = [
+                {'s_param': 'popularity-rank', 'label': 'Destaque'},
                 {'s_param': 'price-asc-rank', 'label': 'Menor Preço'},
-                {'s_param': 'price-desc-rank', 'label': 'Maior Preço'}
+                {'s_param': 'price-desc-rank', 'label': 'Maior Preço'},
+                {'s_param': 'review-rank', 'label': 'Avaliação'},
+                {'s_param': 'date-desc-rank', 'label': 'Lançamento'},
+                {'s_param': 'exact-aware-popularity-rank', 'label': 'Mais Vendido'}
             ]
 
             for ordenacao in ordenacoes:
