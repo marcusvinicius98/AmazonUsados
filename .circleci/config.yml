@@ -7,6 +7,14 @@ parameters:
   usar_historico_usados:
     type: boolean
     default: true
+  # Novo parâmetro para controlar a deleção do histórico
+  apagar_historico:
+    type: boolean
+    default: TRUE # Mais seguro começar com false
+  # Parâmetro para o número máximo de páginas por fluxo de categoria
+  max_paginas_por_fluxo:
+    type: string
+    default: "13" # Mantendo o valor padrão que estava no script
 
 jobs:
   executar_scraper_usados:
@@ -16,11 +24,21 @@ jobs:
       PYTHONUNBUFFERED: "1"
       MIN_DESCONTO_PERCENTUAL_USADOS: << pipeline.parameters.min_desconto_usados >>
       USAR_HISTORICO_USADOS: << pipeline.parameters.usar_historico_usados >>
-      MAX_PAGINAS_USADOS_GERAL: "500" # Você mencionou que alterou isso para 2 nos logs para teste, o que é feito pela variável de ambiente
+      # Mapeando o novo parâmetro para a variável de ambiente correta
+      APAGAR_HISTORICO_USADOS: << pipeline.parameters.apagar_historico >>
+      # Atualizando o nome da variável e usando o novo parâmetro
+      MAX_PAGINAS_USADOS_POR_FLUXO: << pipeline.parameters.max_paginas_por_fluxo >>
+      # As variáveis de PROXY e TELEGRAM devem ser configuradas como secrets no CircleCI
+      # PROXY_HOST: ${PROXY_HOST}
+      # PROXY_PORT: ${PROXY_PORT}
+      # PROXY_USERNAME: ${PROXY_USERNAME}
+      # PROXY_PASSWORD: ${PROXY_PASSWORD}
+      # TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+      # TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
     steps:
       - checkout
       - run:
-          name: Validar arquivo YAML
+          name: Validar arquivo YAML e ambiente
           command: |
             echo "Verificando existência do config.yml..."
             ls -la .circleci/config.yml
@@ -43,41 +61,40 @@ jobs:
           name: Restaurar histórico
           keys:
             - v1-usados-historico-cache-{{ checksum "requirements.txt" }}
+            # Fallback para a chave de cache mais genérica se a específica não for encontrada
             - v1-usados-historico-cache-
       - run:
-          name: Configurar proxy
+          name: Configurar proxy (se aplicável via variáveis de ambiente do CircleCI)
           command: |
-            echo 'export PROXY_HOST=$PROXY_HOST' >> $BASH_ENV
-            echo 'export PROXY_PORT=$PROXY_PORT' >> $BASH_ENV
-            echo 'export PROXY_USERNAME=$PROXY_USERNAME' >> $BASH_ENV
-            echo 'export PROXY_PASSWORD=$PROXY_PASSWORD' >> $BASH_ENV
+            # Estas variáveis devem ser definidas como Secrets no CircleCI se forem usadas
+            echo 'export PROXY_HOST=${PROXY_HOST:-""}' >> $BASH_ENV
+            echo 'export PROXY_PORT=${PROXY_PORT:-""}' >> $BASH_ENV
+            echo 'export PROXY_USERNAME=${PROXY_USERNAME:-""}' >> $BASH_ENV
+            echo 'export PROXY_PASSWORD=${PROXY_PASSWORD:-""}' >> $BASH_ENV
+            echo 'export TELEGRAM_TOKEN=${TELEGRAM_TOKEN:-""}' >> $BASH_ENV
+            echo 'export TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-""}' >> $BASH_ENV
       - run:
-          name: Executar Script Orquestrador
-          no_output_timeout: 60m
-          command: python scripts/orchestrator_usados.py
+          name: Executar Script Orquestrador de Usados
+          no_output_timeout: 60m # Aumentado para permitir execuções mais longas
+          # Certifique-se que o caminho para o script está correto
+          command: python seu_script.py # Ajuste para o nome/caminho correto do seu script principal
       - run:
           name: Verificar arquivos gerados
           command: |
             echo "Conteúdo de history_files_usados:"
-            ls -la history_files_usados/ || echo "Diretório vazio."
+            ls -la history_files_usados/ || echo "Diretório history_files_usados vazio ou não encontrado."
             if [ -f history_files_usados/price_history_USADOS_GERAL.json ]; then
+              echo "Primeiras 20 linhas do histórico:"
               head -n 20 history_files_usados/price_history_USADOS_GERAL.json
             else
-              echo "Arquivo de histórico não encontrado."
+              echo "Arquivo de histórico price_history_USADOS_GERAL.json não encontrado."
             fi
             echo "Conteúdo de debug_logs_usados:"
-            ls -la debug_logs_usados/ || echo "Diretório vazio."
+            ls -la debug_logs_usados/ || echo "Diretório debug_logs_usados vazio ou não encontrado."
             # Verifica se os dumps de página HTML estão sendo criados
-            for file in debug_logs_usados/page_dump_*.html; do
-              if [ -f "$file" ]; then
-                echo "Arquivo de dump de página $file encontrado."
-              fi
-            done
-            for file in debug_logs_usados/*.{png,html}; do # Mantém a verificação original também
-              if [ -f "$file" ]; then
-                echo "Arquivo $file encontrado."
-              fi
-            done
+            find debug_logs_usados/ -name "page_dump_*.html" -print -quit || echo "Nenhum arquivo page_dump encontrado."
+            find debug_logs_usados/ -name "*.png" -print -quit || echo "Nenhum arquivo PNG de debug encontrado."
+          when: always # Executar este passo mesmo se anteriores falharem, para depuração
       - save_cache:
           name: Salvar histórico
           key: v1-usados-historico-cache-{{ checksum "requirements.txt" }}-{{ epoch }}
@@ -88,7 +105,7 @@ jobs:
           destination: history_files_usados
           when: always
       - store_artifacts:
-          path: debug_logs_usados # Esta seção garante que os HTMLs salvos estarão disponíveis
+          path: debug_logs_usados
           destination: debug_logs_usados
           when: always
 
